@@ -1,5 +1,5 @@
 {
-  "description": "Reload a short-lived, explicitly approved AI Safe Driver handover after compaction or clear.",
+  "description": "Detect repeated correction cycles locally and reload a separately approved AI Safe Driver handover after compaction or clear.",
   "hooks": {
     "SessionStart": [
       {
@@ -11,6 +11,30 @@
             "timeout": 5,
             "statusMessage": "Checking for an approved AI Safe Driver handover",
             "additionalContextLimit": 5000
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/session-drift-hook.mjs\"",
+            "timeout": 5,
+            "statusMessage": "Checking for a repeated correction cycle",
+            "additionalContextLimit": 4096
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/session-drift-hook.mjs\"",
+            "timeout": 5
           }
         ]
       }
