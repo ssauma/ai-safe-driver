@@ -2,6 +2,10 @@
 
 English | [한국어](README.ko.md) | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md) | [日本語](README.ja.md)
 
+> **Drifting safely. 100%.**
+>
+> Good news: the detector works. Bad news: it had plenty to detect.
+
 AI Safe Driver helps recover a conversation when an agent starts repeating the same mistake. You can call the skill directly. Local deterministic hooks may also wake it after they observe a correction, an acknowledgment or repair promise, and then the same complaint again. A hook is a reason to inspect the visible conversation, not a diagnosis by itself.
 
 The phrase rules may miss unfamiliar wording, so direct invocation remains available. Anger alone is not drift. Observed repeated tool failures become diagnostic signals only after an explicit diagnosis request. Temporary state stores short-lived categories, counts, and timestamps. It never stores conversation text.

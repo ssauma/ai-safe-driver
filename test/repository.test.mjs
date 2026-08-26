@@ -25,6 +25,8 @@ test("ships one canonical skill for both hosts", () => {
     `${pluginRoot}/.claude-plugin/plugin.json`,
     `${pluginRoot}/.codex-plugin/plugin.json`,
     `${skillRoot}/SKILL.md`,
+    `${skillRoot}/references/recovery.md`,
+    `${skillRoot}/references/handover.md`,
     `${skillRoot}/agents/openai.yaml`,
     `${pluginRoot}/hooks/hooks.json`,
     `${pluginRoot}/scripts/drift-detector.mjs`,
@@ -45,11 +47,13 @@ test("keeps identity, source paths, and versions aligned", () => {
 
   for (const declaration of declarations) {
     assert.equal(declaration.name, name);
-    assert.equal(declaration.version, "0.2.0");
+    assert.equal(declaration.version, "0.3.0");
   }
   assert.equal(claudeMarket.plugins[0].source, `./${pluginRoot}`);
   assert.equal(codexMarket.plugins[0].source.path, `./${pluginRoot}`);
   assert.equal(codexPlugin.skills, "./skills/");
+  assert.match(read("CONTRIBUTING.md"), /version `0\.3\.0`/i);
+  assert.match(read("CONTRIBUTING.ko.md"), /버전 `0\.3\.0`/);
 });
 
 test("explains direct and hook-triggered recovery truthfully in English", () => {
@@ -137,6 +141,114 @@ test("treats hook evidence as a recovery prompt rather than a final diagnosis", 
     /Anger[\s\S]{0,80}profanity[\s\S]{0,80}capitalization[\s\S]{0,80}punctuation[\s\S]{0,80}repeated characters[\s\S]{0,80}alone never raises the drift label/i,
     /Hook state is not permission to retry a tool, write a file, create or arm a handover, compact, or clear/i,
   ], `${skillRoot}/SKILL.md`);
+});
+
+test("keeps the skill as a small router and loads details only when needed", () => {
+  const skill = read(`${skillRoot}/SKILL.md`);
+  const recovery = read(`${skillRoot}/references/recovery.md`);
+  const handover = read(`${skillRoot}/references/handover.md`);
+  const words = skill.trim().split(/\s+/u).length;
+
+  assert.ok(Buffer.byteLength(skill, "utf8") <= 3000, `SKILL.md is ${Buffer.byteLength(skill, "utf8")} bytes`);
+  assert.ok(words <= 400, `SKILL.md is ${words} words`);
+  assert.match(skill, /same failure twice[\s\S]{0,160}explicit (?:drift|conversation-health) check/i);
+  assert.match(skill, /explicit (?:compaction|new-session) question/i);
+  assert.match(skill, /\[recovery procedure\]\(references\/recovery\.md\)/i);
+  assert.match(skill, /Do not read (?:it|the recovery procedure)[\s\S]{0,120}condition is confirmed/i);
+  assert.match(skill, /only after the user separately approves preparing a handover/i);
+  assert.match(skill, /\[handover procedure\]\(references\/handover\.md\)/i);
+  assert.match(skill, /Do not read (?:that|the) reference merely because the hook fired/i);
+  assert.match(recovery, /^# Recovery procedure$/m);
+  assert.match(recovery, /Recovery contract/);
+  assert.match(recovery, /On-demand drift dashboard/);
+  assert.match(recovery, /offer a handover[\s\S]{0,180}separate approval/i);
+  assert.match(recovery, /container[\s\S]{0,100}keys or columns[\s\S]{0,100}ordering[\s\S]{0,100}forbidden extras[\s\S]{0,100}valid example/i);
+  assert.match(recovery, /proposed handover preview[\s\S]{0,180}persist[\s\S]{0,100}file-write approval/i);
+  assert.match(handover, /\.ai-safe-driver\/handover\.md/);
+  assert.match(handover, /\.ai-safe-driver\/armed\.json/);
+  assert.match(handover, /ai-safe-driver-handover-v1/);
+  assert.match(handover, /The hook never writes the handover and never initiates/i);
+});
+
+test("opens every localized README with the self-deprecating drift dashboard", () => {
+  const contracts = [
+    ["README.md", /Drifting safely\. 100%/],
+    ["README.ko.md", /안전하게 드리프트중입니다\. 100%/],
+    ["README.zh-CN.md", /正在安全漂移。100%/],
+    ["README.zh-TW.md", /正在安全甩尾。100%/],
+    ["README.ja.md", /安全にドリフト中です。100%/],
+  ];
+
+  for (const [filePath, dashboard] of contracts) {
+    const opening = read(filePath).slice(0, 700);
+    assert.match(opening, dashboard, `${filePath} hides the dashboard below the opening`);
+  }
+});
+
+test("ships the GitHub Community Standards files", () => {
+  for (const filePath of [
+    "README.md",
+    "CODE_OF_CONDUCT.md",
+    "CONTRIBUTING.md",
+    "LICENSE",
+    "SECURITY.md",
+    ".github/ISSUE_TEMPLATE/bug_report.yml",
+    ".github/ISSUE_TEMPLATE/conduct_contact.yml",
+    ".github/ISSUE_TEMPLATE/feature_request.yml",
+    ".github/ISSUE_TEMPLATE/security_contact.yml",
+    ".github/ISSUE_TEMPLATE/config.yml",
+    ".github/PULL_REQUEST_TEMPLATE.md",
+  ]) {
+    assert.equal(existsSync(filePath), true, `missing ${filePath}`);
+  }
+
+  const codeOfConduct = read("CODE_OF_CONDUCT.md");
+  assert.match(codeOfConduct, /Our standards/i);
+  assert.match(codeOfConduct, /Reporting/i);
+  assert.match(codeOfConduct, /@ssauma/);
+  assert.match(codeOfConduct, /public issue titled [`“\"]Private conduct contact requested/i);
+  assert.match(codeOfConduct, /Do not include (?:the )?report details/i);
+  assert.match(codeOfConduct, /issues\/new\?template=conduct_contact\.yml/i);
+
+  const security = read("SECURITY.md");
+  assert.match(security, /Supported versions/i);
+  assert.match(security, /Reporting a vulnerability/i);
+  assert.match(security, /security\/advisories\/new/i);
+  assert.match(security, /Do not (?:open|report)[\s\S]{0,100}public issue/i);
+  assert.match(security, /If private vulnerability reporting is unavailable[\s\S]{0,220}Security contact requested/i);
+  assert.match(security, /draft security advisory[\s\S]{0,120}collaborator/i);
+  assert.match(security, /issues\/new\?template=security_contact\.yml/i);
+
+  for (const filePath of [
+    ".github/ISSUE_TEMPLATE/bug_report.yml",
+    ".github/ISSUE_TEMPLATE/conduct_contact.yml",
+    ".github/ISSUE_TEMPLATE/feature_request.yml",
+    ".github/ISSUE_TEMPLATE/security_contact.yml",
+  ]) {
+    const content = read(filePath);
+    assert.match(content, /^name:/m, `${filePath} lacks name`);
+    assert.match(content, /^description:/m, `${filePath} lacks description`);
+    assert.match(content, /^body:/m, `${filePath} lacks body`);
+    const fields = [...content.matchAll(/^  - type: (?!markdown\s*$)[^\n]+\n([\s\S]*?)(?=^  - type:|(?![\s\S]))/gmu)];
+    assert.ok(fields.length > 0, `${filePath} lacks interactive fields`);
+    const ids = fields.map((field) => field[1].match(/^    id:\s*([a-zA-Z0-9_-]+)\s*$/mu)?.[1]);
+    assert.equal(ids.every(Boolean), true, `${filePath} has a field without an id`);
+    assert.equal(new Set(ids).size, ids.length, `${filePath} has duplicate field ids`);
+  }
+
+  assert.match(read(".github/ISSUE_TEMPLATE/conduct_contact.yml"), /^title:\s*"Private conduct contact requested"$/m);
+  assert.match(read(".github/ISSUE_TEMPLATE/security_contact.yml"), /^title:\s*"Security contact requested"$/m);
+  assert.match(read(".github/ISSUE_TEMPLATE/conduct_contact.yml"), /Do not include report details/i);
+  assert.match(read(".github/ISSUE_TEMPLATE/security_contact.yml"), /Do not include vulnerability details/i);
+
+  assert.match(read(".github/ISSUE_TEMPLATE/config.yml"), /blank_issues_enabled:\s*false/);
+  assertMatchesAll(read(".github/PULL_REQUEST_TEMPLATE.md"), [
+    /^## Summary$/m,
+    /^## Verification$/m,
+    /npm test/,
+    /claude plugin validate \./,
+    /four version declarations/i,
+  ], ".github/PULL_REQUEST_TEMPLATE.md");
 });
 
 test("ships matched English, Korean, Chinese, and Japanese behavioral evaluations", () => {
@@ -370,7 +482,8 @@ test("documents SessionStart timing and both forbidden automatic transitions in 
 });
 
 test("defines an on-demand metaphorical dashboard and protects strict formats", () => {
-  const skill = read(`${skillRoot}/SKILL.md`);
+  const skill = read(`${skillRoot}/references/recovery.md`);
+  const handover = read(`${skillRoot}/references/handover.md`);
   assert.match(skill, /안전하게 드리프트중입니다\. <percentage>%/);
   assert.match(skill, /Drifting safely\. <percentage>%/);
   assert.match(skill, /not a measurement/i);
@@ -383,9 +496,9 @@ test("defines an on-demand metaphorical dashboard and protects strict formats", 
   assert.match(skill, /start a fresh session/);
   assert.match(skill, /new session/i);
   assert.match(skill, /File writes, handover arming, compaction, and context reset require explicit runtime approval/);
-  assert.match(skill, /Do not infer this approval from the file-write approval/);
-  assert.match(skill, /Never claim that an ordinary assistant response can execute an interactive slash command/);
-  assert.match(skill, /The hook never writes the handover and never initiates/);
+  assert.match(handover, /Do not infer this approval from the file-write approval/);
+  assert.match(handover, /Never claim that an ordinary assistant response can execute an interactive slash command/);
+  assert.match(handover, /The hook never writes the handover and never initiates/);
   assert.match(skill, /카운터 스티어링 하시겠습니까\?/);
   assert.match(skill, /Would you like me to countersteer\?/);
   assert.match(skill, /A yes authorizes that recovery discussion only/);
@@ -422,7 +535,7 @@ test("ships drift detection hooks and keeps handover permission gated", () => {
   assert.equal(promptHook.command, 'node "${CLAUDE_PLUGIN_ROOT}/scripts/session-drift-hook.mjs"');
   assert.equal(promptHook.timeout, 5);
   assert.equal(promptHook.statusMessage, "Checking for a repeated correction cycle");
-  assert.equal(promptHook.additionalContextLimit, 4096);
+  assert.equal(promptHook.additionalContextLimit, 1024);
 
   const stopHook = hookConfig.hooks.Stop[0].hooks[0];
   assert.deepEqual(Object.keys(stopHook).sort(), ["command", "timeout", "type"]);

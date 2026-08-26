@@ -23,7 +23,7 @@
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/session-drift-hook.mjs\"",
             "timeout": 5,
             "statusMessage": "Checking for a repeated correction cycle",
-            "additionalContextLimit": 4096
+            "additionalContextLimit": 1024
           }
         ]
       }

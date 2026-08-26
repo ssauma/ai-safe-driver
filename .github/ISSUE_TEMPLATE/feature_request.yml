@@ -1,0 +1,39 @@
+name: Feature request
+description: Suggest a focused improvement to AI Safe Driver.
+title: "[Feature]: "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What recurring problem should this change solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposed-behavior
+    attributes:
+      label: Proposed behavior
+      description: Describe the smallest useful behavior change.
+    validations:
+      required: true
+  - type: dropdown
+    id: host-impact
+    attributes:
+      label: Host impact
+      options:
+        - Claude Code
+        - Codex
+        - Both
+        - Host-independent
+    validations:
+      required: true
+  - type: textarea
+    id: safety-token-impact
+    attributes:
+      label: Safety and token impact
+      description: Note any new permissions, hook context, persistent state, or token cost.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: What simpler approach have you considered?

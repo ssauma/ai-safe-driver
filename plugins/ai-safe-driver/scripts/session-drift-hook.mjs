@@ -14,7 +14,7 @@ import {
 } from "./drift-detector.mjs";
 
 const MAX_INPUT_BYTES = 256 * 1024;
-const MAX_CONTEXT_BYTES = 4096;
+const MAX_CONTEXT_BYTES = 320;
 const LOCK_LEASE_MS = 30 * 1000;
 const RECLAIM_GUARD_LEASE_MS = LOCK_LEASE_MS;
 const MAX_RECLAIMER_GUARD_CLEANUP = 64;
@@ -46,13 +46,9 @@ const readStdin = async () => {
 };
 
 const recoveryContext = (reason) => [
-  "AI Safe Driver observed a repeated-correction recovery signal.",
-  `Trigger category: ${reason}. This is an observable rule label, not hidden model-state measurement.`,
-  "Load and follow the ai-safe-driver skill now. Stop defending the previous response.",
-  "Re-anchor to the user's latest goal and name the exact repeated mismatch.",
-  "Separate evidence, supported cause, hypotheses, and unknowns.",
-  "Do not retry a tool unless the user explicitly requested diagnosis and a relevant condition changed.",
-  "Do not write files, create a handover, compact, or clear without separate explicit approval.",
+  `AI Safe Driver signal: ${reason}. This observable label is not proof.`,
+  "Load the ai-safe-driver skill. Confirm repeated failure or an explicit health check in visible context; use its recovery route only if confirmed.",
+  "This signal authorizes no retry, write, handover, compact, or clear.",
 ].join("\n").slice(0, MAX_CONTEXT_BYTES);
 
 const isMissing = (error) => error && error.code === "ENOENT";

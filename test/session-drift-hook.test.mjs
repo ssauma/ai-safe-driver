@@ -88,6 +88,14 @@ const assertBoundedStderr = (result) => {
   assert.ok(Buffer.byteLength(result.stderr, "utf8") <= 512, result.stderr);
   assert.ok(result.stderr.split("\n").filter(Boolean).length <= 1, result.stderr);
 };
+const assertLightweightRecoveryContext = (context) => {
+  assert.ok(Buffer.byteLength(context, "utf8") <= 320, context);
+  assert.match(context, /Load the ai-safe-driver skill/i);
+  assert.match(context, /observable[\s\S]{0,40}not proof/i);
+  assert.match(context, /only if confirmed/i);
+  assert.match(context, /authorizes no retry, write, handover, compact, or clear/i);
+  assert.doesNotMatch(context, /references?\//iu);
+};
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const barrierPath = (dir, point, suffix) => path.join(dir, `${point}.${suffix}`);
 const startDriftHook = (stateDir, input, extraEnv = {}, extraArgs = []) => {
@@ -208,8 +216,23 @@ test("an acknowledged later recurrence injects bounded recovery context", () => 
   assert.equal(output.hookSpecificOutput.hookEventName, "UserPromptSubmit");
   assert.equal(output.suppressOutput, true);
   assert.match(output.hookSpecificOutput.additionalContext, /acknowledged_recurrence/u);
-  assert.match(output.hookSpecificOutput.additionalContext, /Load and follow the ai-safe-driver skill now/u);
-  assert.ok(Buffer.byteLength(output.hookSpecificOutput.additionalContext, "utf8") <= 4096);
+  assertLightweightRecoveryContext(output.hookSpecificOutput.additionalContext);
+});
+
+test("a repeated correction without an assistant acknowledgment uses the same lightweight route", () => {
+  const root = makeStateDir("repeated-correction");
+  const sessionId = "session-repeated-correction";
+  assertNoOutput(runDriftHook(root, {
+    hook_event_name: "UserPromptSubmit", session_id: sessionId, prompt: "안 했잖아.",
+  }));
+
+  const result = runDriftHook(root, {
+    hook_event_name: "UserPromptSubmit", session_id: sessionId, prompt: "또 안 했잖아.",
+  });
+  assertSucceeded(result);
+  const output = JSON.parse(result.stdout);
+  assert.match(output.hookSpecificOutput.additionalContext, /repeated_correction/u);
+  assertLightweightRecoveryContext(output.hookSpecificOutput.additionalContext);
 });
 
 test("routine apology without an active correction cycle creates no state", () => {
@@ -233,6 +256,7 @@ test("stateless explicit health checks inject but do not persist in every suppor
     assertSucceeded(result);
     const output = JSON.parse(result.stdout);
     assert.match(output.hookSpecificOutput.additionalContext, /explicit_health_check/u, language);
+    assertLightweightRecoveryContext(output.hookSpecificOutput.additionalContext);
     assert.deepEqual(readdirSync(root), [], language);
   }
 });
@@ -250,6 +274,7 @@ test("stateless repeated-tool diagnoses inject but do not persist in every suppo
     assertSucceeded(result);
     const output = JSON.parse(result.stdout);
     assert.match(output.hookSpecificOutput.additionalContext, /explicit_tool_diagnosis/u, language);
+    assertLightweightRecoveryContext(output.hookSpecificOutput.additionalContext);
     assert.deepEqual(readdirSync(root), [], language);
   }
 });
