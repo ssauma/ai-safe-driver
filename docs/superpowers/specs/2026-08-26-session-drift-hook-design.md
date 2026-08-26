@@ -34,7 +34,19 @@ A `UserPromptSubmit` command hook classifies the current user message into zero 
 - explicit tool diagnosis: the user names a repeated tool failure and asks for analysis;
 - emphasis: capitalization, repeated punctuation, repeated characters, or unusually forceful wording.
 
-Emphasis can strengthen another category but cannot create a trigger on its own.
+Emphasis is classified only to enforce the negative rule: it is neither persisted nor emitted and cannot create a trigger on its own.
+
+The correction and protest categories recognize several recurring shapes without storing their wording:
+
+- re-anchor: the user says the answer addressed the wrong thing or restates what was actually requested;
+- omission or no-op: the user says a requested change is still missing, unchanged, or was claimed but not applied;
+- broken repair promise: the user says the agent promised to fix something and then repeated it;
+- scope or authorization breach: the user says an excluded action was taken, an instruction not to act was ignored, or permission was assumed;
+- execution avoidance: the user says the agent keeps asking, explaining, apologizing, or promising instead of doing the bounded task;
+- output-contract regression: the user says a required format, language, field, order, or no-extra-text constraint was lost again;
+- oscillation: the user reports that the answer, status, or chosen direction keeps flipping back and forth.
+
+Recurrence markers such as “again,” “still,” `또`, `다시`, and `계속` are too common to classify alone. They count only when the same prompt also contains a failure, mismatch, reversal, or protest anchor, or when a stronger recurrence phrase explicitly refers to the same mistake. Neutral phrases equivalent to “continue,” “another question,” or “explain again” do not count as recurrence.
 
 ### Assistant response hook
 
@@ -45,6 +57,8 @@ A `Stop` command hook examines the host-provided last assistant message and reco
 - repair promise: the assistant says it will correct, retry differently, or follow the requested format next time.
 
 These phrases do not count as drift by themselves. They matter only when a later user prompt reports recurrence.
+
+An assistant acknowledgment, apology, or repair promise is recorded only when a user correction or protest has already started a recovery cycle. A routine apology in an unrelated exchange cannot seed a later drift trigger.
 
 ### Session state
 
@@ -59,7 +73,7 @@ The hooks share a small JSON state record keyed by a one-way hash of the host se
 
 No user prompt, assistant response, repository path, tool input, tool output, secret, or handover content is stored.
 
-State lives under the operating system's temporary directory in an `ai-safe-driver` subdirectory. Files are regular files created with user-only permissions. Each hook invocation removes expired records before reading or writing the current one. A record expires no later than 24 hours after its last signal. A fresh session uses a different hashed key.
+State lives under the operating system's temporary directory in an `ai-safe-driver` subdirectory. Files are regular files created with user-only permissions. Each hook invocation removes expired records before reading or writing the current one. A record expires no later than 24 hours after its last signal; neutral turns do not extend that lifetime. A fresh session uses a different hashed key.
 
 ### Recovery context
 
@@ -83,7 +97,7 @@ Recovery context is injected when any of these conditions is true:
 - a recurrence signal follows an assistant acknowledgment, apology, or repair promise in the same session; or
 - at least two correction or protest signals occur in the same session and the later message contains a recurrence signal.
 
-An emphasis signal changes no decision on its own. It is retained only as supporting context for the skill, which must not raise risk merely because the user sounds angry.
+An emphasis signal changes no decision on its own. It is not retained in session state, and the skill must not raise risk merely because the user sounds angry.
 
 After injection, the record enters a two-prompt cooldown. New evidence is still counted, but the hook does not inject the same recovery reminder on every message. An explicit health check bypasses the cooldown.
 
@@ -108,6 +122,8 @@ If a host omits a session identifier, the hook fails open without persistence an
 The user's local Claude-mem history may be inspected during development to find realistic Korean and English correction patterns. Raw prompts, assistant replies, project names, and quoted conversation text remain local. Only anonymized pattern categories and synthetic evaluation cases may be committed.
 
 Examples supplied directly by the user include repeated assistant phrases such as `맞습니다`, `안 했습니다`, `죄송합니다`, and statements equivalent to “you said you would do it and still did not.” These examples inform categories, not exact-match-only rules.
+
+An aggregate-only review of the local corpus also supports the anonymized categories above: re-anchoring, unchanged or missing work, broken promises, unauthorized scope, repeated questions instead of action, output-contract regression, and back-and-forth status claims. Common standalone words such as “again,” “continue,” “format,” `또`, `계속`, and `형식` appeared too broadly to be safe triggers. Tests therefore include both synthetic positive cases and neutral uses of those words.
 
 ## README contract
 
@@ -134,6 +150,9 @@ Verify at least these state transitions:
 - correction, apology, unrelated new request does not trigger;
 - anger or profanity without a correction does not trigger;
 - two corrections without recurrence wording do not trigger prematurely;
+- a routine apology before any correction does not seed a trigger;
+- neutral uses of recurrence words, such as another question or a request to continue, do not trigger;
+- broken promises, unauthorized scope, execution avoidance, output-contract regression, and oscillating status claims are recognized when coupled to recurrence;
 - explicit health check triggers immediately;
 - explicit repeated-tool diagnosis triggers immediately;
 - a raw tool failure without a user request is ignored;
