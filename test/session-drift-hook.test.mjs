@@ -62,10 +62,19 @@ const runWithoutTestMode = (stateDir, input) => {
 const stateName = (sessionId) => `${createHash("sha256").update(sessionId).digest("hex").slice(0, 32)}.json`;
 const stateFile = (root, sessionId) => path.join(root, stateName(sessionId));
 const lockFile = (root, sessionId) => `${stateFile(root, sessionId)}.lock`;
-const reclaimerGuardFile = (root, sessionId, identity, epoch) => (
-  `${lockFile(root, sessionId)}.reclaim.${identity.dev}-${identity.ino}.${epoch}`
-);
 const reclaimerGuardDirectory = (root) => path.join(root, ".reclaimer-guards");
+const ensureReclaimerGuardDirectory = (root) => {
+  const directory = reclaimerGuardDirectory(root);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  return directory;
+};
+const reclaimerGuardFile = (root, sessionId, identity, epoch) => (
+  path.join(
+    ensureReclaimerGuardDirectory(root),
+    `${path.basename(lockFile(root, sessionId))}.reclaim.${identity.dev}-${identity.ino}.${epoch}`,
+  )
+);
+const ageHistoricalGuard = (file, now) => utimesSync(file, new Date(now - 30_001), new Date(now - 30_001));
 const readState = (root, sessionId) => JSON.parse(readFileSync(stateFile(root, sessionId), "utf8"));
 const mode = (file) => statSync(file).mode & 0o777;
 const assertSucceeded = (result) => assert.equal(result.status, 0, result.stderr);
@@ -576,6 +585,7 @@ test("two reclaimers ignore a crashed guard without deleting the current epoch s
     lockIno: identity.ino,
     epoch: epoch - 3,
   }), { mode: 0o600 });
+  ageHistoricalGuard(crashedGuard, now);
   const first = startDriftHook(root, {
     hook_event_name: "UserPromptSubmit", session_id: sessionId, prompt: "안 했잖아.",
   }, {
@@ -671,6 +681,7 @@ test("pruning bounds expired historical guards without deleting active foreign g
       lockIno: identity.ino,
       epoch: guardEpoch,
     }), { mode: 0o600 });
+    ageHistoricalGuard(file, now);
     return file;
   });
   const activeCurrentGuard = reclaimerGuardFile(root, sessionId, identity, epoch);
@@ -719,6 +730,7 @@ test("cleanup bounds expired guards orphaned under prior lock identities", () =>
       lockIno: orphanIdentity.ino,
       epoch: guardEpoch,
     }), { mode: 0o600 });
+    ageHistoricalGuard(file, now);
     return file;
   });
 
@@ -742,9 +754,11 @@ test("an active adjacent guard is found behind more than 128 historical or malfo
   const staleLock = lockFile(root, sessionId);
   writeFileSync(staleLock, JSON.stringify({ owner: "expired-hook", leaseExpiresAt: now - 1 }), { mode: 0o600 });
   const identity = lstatSync(staleLock);
-  const prefix = `${staleLock}.reclaim.`;
+  const prefix = path.join(ensureReclaimerGuardDirectory(root), `${path.basename(staleLock)}.reclaim.`);
   for (let index = 0; index < 130; index += 1) {
-    writeFileSync(`${prefix}000-${String(index).padStart(3, "0")}.0`, "malformed", { mode: 0o600 });
+    const historicalGuard = `${prefix}000-${String(index).padStart(3, "0")}.0`;
+    writeFileSync(historicalGuard, "malformed", { mode: 0o600 });
+    ageHistoricalGuard(historicalGuard, now);
   }
   const activeGuard = reclaimerGuardFile(root, sessionId, identity, epoch - 1);
   const activeRecord = {
@@ -755,7 +769,7 @@ test("an active adjacent guard is found behind more than 128 historical or malfo
     epoch: epoch - 1,
   };
   writeFileSync(activeGuard, JSON.stringify(activeRecord), { mode: 0o600 });
-  assert.ok(readdirSync(root).indexOf(path.basename(activeGuard)) > 128);
+  assert.ok(readdirSync(reclaimerGuardDirectory(root)).indexOf(path.basename(activeGuard)) > 128);
 
   assertNoOutput(runDriftHook(root, {
     hook_event_name: "UserPromptSubmit", session_id: sessionId, prompt: "안 했잖아.",
@@ -793,6 +807,7 @@ test("cleanup progresses through malformed historical guards without touching ac
           epoch: guardEpoch - 1,
         });
     writeFileSync(file, content, { mode: 0o600 });
+    ageHistoricalGuard(file, now);
     return file;
   });
   const activeCurrentGuard = reclaimerGuardFile(root, sessionId, identity, epoch);
@@ -825,7 +840,7 @@ test("a delayed epoch-selected reclaimer aborts without overlapping the current 
   const firstBarrier = makeStateDir("delayed-reclaimer-first");
   const secondBarrier = makeStateDir("delayed-reclaimer-second");
   const sessionId = "session-delayed-reclaimer-epoch";
-  const epochMs = 20;
+  const epochMs = 250;
   const staleLock = lockFile(root, sessionId);
   writeFileSync(staleLock, JSON.stringify({ owner: "expired-hook", leaseExpiresAt: Date.now() - 1 }), { mode: 0o600 });
   const input = { hook_event_name: "UserPromptSubmit", session_id: sessionId, prompt: "안 했잖아." };
@@ -837,6 +852,7 @@ test("a delayed epoch-selected reclaimer aborts without overlapping the current 
 
   await waitForBarrier(first, firstBarrier, "after-reclaimer-epoch-selection");
   await wait(epochMs * 5);
+  while (Date.now() % epochMs > epochMs / 3) await wait(5);
   const second = startDriftHook(root, input, {
     AI_SAFE_DRIVER_TEST_RECLAIM_EPOCH_MS: String(epochMs),
     AI_SAFE_DRIVER_TEST_BARRIER_DIR: secondBarrier,
@@ -848,6 +864,7 @@ test("a delayed epoch-selected reclaimer aborts without overlapping the current 
   assertNoOutput(await first.result);
   assert.equal(readState(root, sessionId).correctionCount, 1);
   assert.equal(lstatSync(lockFile(root, sessionId)).isFile(), true);
+  assert.equal(mode(reclaimerGuardDirectory(root)), 0o700);
   assert.equal(readdirSync(reclaimerGuardDirectory(root)).length, 1);
   releaseBarrier(secondBarrier, "before-lock-release");
   assertNoOutput(await second.result);
@@ -873,10 +890,11 @@ test("historical guard cleanup streams a private directory without materializing
   for (let index = 0; index < 1_024; index += 1) {
     writeFileSync(path.join(root, `ordinary-root-entry-${String(index).padStart(4, "0")}.tmp`), "ordinary", { mode: 0o600 });
   }
-  mkdirSync(guardDirectory, { mode: 0o700 });
+  ensureReclaimerGuardDirectory(root);
   const historicalGuards = Array.from({ length: 150 }, (_, index) => {
     const file = path.join(guardDirectory, path.basename(reclaimerGuardFile(root, sessionId, identity, epoch - index - 3)));
     writeFileSync(file, index % 2 === 0 ? "{partial" : JSON.stringify({ owner: `partial-${index}` }), { mode: 0o600 });
+    ageHistoricalGuard(file, now);
     return file;
   });
   const activeGuard = path.join(guardDirectory, path.basename(reclaimerGuardFile(root, sessionId, identity, epoch)));

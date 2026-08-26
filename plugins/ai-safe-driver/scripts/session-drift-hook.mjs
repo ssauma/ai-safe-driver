@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readdir, rename, rm } from "node:fs/promises";
+import { lstat, mkdir, open, opendir, readdir, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -18,6 +18,7 @@ const MAX_CONTEXT_BYTES = 4096;
 const LOCK_LEASE_MS = 30 * 1000;
 const RECLAIM_GUARD_LEASE_MS = LOCK_LEASE_MS;
 const MAX_RECLAIMER_GUARD_CLEANUP = 64;
+const MAX_RECLAIMER_GUARD_INSPECTIONS = 128;
 const ACTIVE_GUARD_EPOCH_WINDOW = 1;
 const TEST_MODE = process.env.AI_SAFE_DRIVER_TEST_MODE === "1";
 const testNow = Number(process.env.AI_SAFE_DRIVER_TEST_NOW_MS);
@@ -30,6 +31,7 @@ const configuredTestRoot = TEST_MODE
   ? process.env.AI_SAFE_DRIVER_STATE_DIR
   : undefined;
 const root = path.resolve(configuredTestRoot || path.join(tmpdir(), "ai-safe-driver"));
+const reclaimerGuardRoot = path.join(root, ".reclaimer-guards");
 const sessionKey = (id) => createHash("sha256").update(id).digest("hex").slice(0, 32);
 const statePath = (id) => path.join(root, `${sessionKey(id)}.json`);
 
@@ -73,6 +75,18 @@ const ensureRoot = async () => {
   const handle = await open(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   try {
     if (!(await handle.stat()).isDirectory()) throw new Error("unsafe state root");
+    await handle.chmod(0o700);
+  } finally {
+    await handle.close();
+  }
+};
+
+const ensureReclaimerGuardRoot = async () => {
+  await ensureRoot();
+  await mkdir(reclaimerGuardRoot, { mode: 0o700 });
+  const handle = await open(reclaimerGuardRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    if (!(await handle.stat()).isDirectory()) throw new Error("unsafe reclaimer guard root");
     await handle.chmod(0o700);
   } finally {
     await handle.close();
@@ -258,7 +272,7 @@ const writeLock = async (file, owner) => {
 
 const reclaimerEpoch = () => Math.floor(clockNow() / reclaimerEpochMs);
 const reclaimerGuardPath = (file, identity, epoch) => (
-  `${file}.reclaim.${identity.dev}-${identity.ino}.${epoch}`
+  path.join(reclaimerGuardRoot, `${path.basename(file)}.reclaim.${identity.dev}-${identity.ino}.${epoch}`)
 );
 
 const readReclaimerGuard = async (file) => {
@@ -268,6 +282,7 @@ const readReclaimerGuard = async (file) => {
 };
 
 const writeReclaimerGuard = async (file, owner, lockIdentity, epoch) => {
+  await ensureReclaimerGuardRoot();
   const handle = await open(file, "wx", 0o600);
   try {
     await handle.writeFile(JSON.stringify({
@@ -302,6 +317,7 @@ const isExactActiveGuard = (record, lockIdentity, epoch) => record?.valid
   && record.lock.leaseExpiresAt > clockNow();
 
 const activeReclaimerGuards = async (lockFile, lockIdentity) => {
+  await ensureReclaimerGuardRoot();
   const active = [];
   for (const epoch of [reclaimerEpoch(), reclaimerEpoch() - ACTIVE_GUARD_EPOCH_WINDOW]) {
     const file = reclaimerGuardPath(lockFile, lockIdentity, epoch);
@@ -316,21 +332,34 @@ const activeReclaimerGuards = async (lockFile, lockIdentity) => {
 };
 
 const cleanupHistoricalReclaimerGuards = async () => {
-  const entries = await readdir(root, { withFileTypes: true });
+  await ensureReclaimerGuardRoot();
+  const directory = await opendir(reclaimerGuardRoot);
   const currentEpoch = reclaimerEpoch();
+  let inspected = 0;
   let removed = 0;
-  for (const entry of entries) {
-    if (!entry.isFile() || entry.isSymbolicLink()) continue;
-    const parts = guardNameParts(entry.name);
-    if (!parts || parts.epoch > currentEpoch - ACTIVE_GUARD_EPOCH_WINDOW - 1) continue;
-    if (removed >= MAX_RECLAIMER_GUARD_CLEANUP) break;
-    try {
-      const file = path.join(root, entry.name);
-      await rm(file);
-      removed += 1;
-    } catch (error) {
-      if (!isMissing(error)) continue;
+  try {
+    while (inspected < MAX_RECLAIMER_GUARD_INSPECTIONS && removed < MAX_RECLAIMER_GUARD_CLEANUP) {
+      const entry = await directory.read();
+      if (!entry) break;
+      inspected += 1;
+      if (!entry.isFile() || entry.isSymbolicLink()) continue;
+      const parts = guardNameParts(entry.name);
+      if (!parts || parts.epoch > currentEpoch - ACTIVE_GUARD_EPOCH_WINDOW - 1) continue;
+      try {
+        const file = path.join(reclaimerGuardRoot, entry.name);
+        const info = await assertRegularFile(file);
+        if (clockNow() - info.mtimeMs <= RECLAIM_GUARD_LEASE_MS) continue;
+        const record = await readReclaimerGuard(file);
+        if (!record) continue;
+        if (record.valid && record.lock.leaseExpiresAt > clockNow()) continue;
+        await rm(file);
+        removed += 1;
+      } catch (error) {
+        if (!isMissing(error)) continue;
+      }
     }
+  } finally {
+    await directory.close();
   }
 };
 
@@ -340,10 +369,15 @@ const acquireReclaimerGuard = async (lockFile, lockIdentity) => {
   const epoch = reclaimerEpoch();
   const file = reclaimerGuardPath(lockFile, lockIdentity, epoch);
   const owner = randomUUID();
+  await testBarrier("after-reclaimer-epoch-selection");
   try {
     await writeReclaimerGuard(file, owner, lockIdentity, epoch);
   } catch (error) {
     if (!error || error.code !== "EEXIST") throw error;
+    return undefined;
+  }
+  if (reclaimerEpoch() !== epoch) {
+    await releaseReclaimerGuard({ file, owner, lockIdentity, epoch });
     return undefined;
   }
   const active = await activeReclaimerGuards(lockFile, lockIdentity);
