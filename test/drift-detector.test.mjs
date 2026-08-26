@@ -1,0 +1,152 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  applyAssistantTurn,
+  applyUserTurn,
+  classifyAssistantResponse,
+  classifyUserPrompt,
+  createInitialState,
+} from "../plugins/ai-safe-driver/scripts/drift-detector.mjs";
+
+test("classifies user correction and recurrence signals in Korean and English", () => {
+  const cases = [
+    ["안 했잖아.", { correction: true }],
+    ["한다고 해놓고 또 안 했잖아.", { correction: true, recurrence: true }],
+    ["왜 같은 실수를 계속 반복해?", { recurrence: true, protest: true }],
+    ["You said you would fix it and still did not.", { correction: true, recurrence: true }],
+    ["Why do you keep making the same mistake?", { recurrence: true, protest: true }],
+  ];
+  for (const [text, expected] of cases) {
+    const actual = classifyUserPrompt(text);
+    for (const [key, value] of Object.entries(expected)) assert.equal(actual[key], value, text);
+  }
+});
+
+test("classifies assistant acknowledgment without treating it as a trigger", () => {
+  for (const text of [
+    "맞습니다. 요청한 항목을 넣지 않았습니다. 죄송합니다. 다시 고치겠습니다.",
+    "You're right. I missed that requirement. Sorry. I'll fix it.",
+  ]) {
+    const signals = classifyAssistantResponse(text);
+    assert.equal(signals.acknowledgment, true);
+    assert.equal(signals.apology, true);
+    assert.equal(signals.repairPromise, true);
+  }
+});
+
+test("does not treat emphasis or ordinary apology as drift", () => {
+  assert.deepEqual(classifyUserPrompt("이게 뭐야!!!!!"), {
+    correction: false,
+    recurrence: false,
+    protest: false,
+    explicitHealthCheck: false,
+    explicitToolDiagnosis: false,
+    emphasis: true,
+  });
+  assert.deepEqual(classifyAssistantResponse("Sorry for the delay."), {
+    acknowledgment: false,
+    apology: true,
+    repairPromise: false,
+  });
+});
+
+test("does not treat neutral recurrence words as a repeated failure", () => {
+  for (const text of [
+    "계속 진행해.", "또 다른 질문이 있어.", "다시 설명해줘.",
+    "Continue with the plan.", "I have another question.", "Explain it again.",
+  ]) assert.equal(classifyUserPrompt(text).recurrence, false, text);
+});
+
+test("recognizes additional correction shapes without using emotion as proof", () => {
+  const cases = [
+    "그게 아니라 내가 요청한 건 설치만 하는 거였어.",
+    "한다고 해놓고 또 반영 안 했잖아.",
+    "하지 말랬는데 왜 또 바꿨어?",
+    "말만 하지 말고, 같은 질문 그만하고 진행해.",
+    "출력 형식이 또 원래대로 돌아갔어.",
+    "아까는 됐다더니 지금은 안 된다며. 왜 계속 왔다 갔다 해?",
+    "That's not what I asked for.",
+    "You said you fixed it, but the output format broke again.",
+    "I told you not to change that, and you did it again.",
+    "Stop asking the same question and do the requested step.",
+  ];
+  for (const text of cases) {
+    const signals = classifyUserPrompt(text);
+    assert.equal(signals.correction || signals.protest, true, text);
+  }
+});
+
+test("requires an explicit repeated-tool diagnosis request", () => {
+  assert.equal(classifyUserPrompt("같은 툴 호출이 또 실패했어. 원인을 점검해줘.").explicitToolDiagnosis, true);
+  assert.equal(classifyUserPrompt("툴이 실패했어.").explicitToolDiagnosis, false);
+  assert.equal(classifyUserPrompt("The same tool call failed again. Diagnose why.").explicitToolDiagnosis, true);
+});
+
+test("reduces correction, acknowledgment, and recurrence into a recovery trigger", () => {
+  const start = createInitialState(1000);
+  const first = applyUserTurn(start, classifyUserPrompt("안 했잖아."), 1100);
+  assert.equal(first.inject, false);
+  const acknowledged = applyAssistantTurn(first.state, classifyAssistantResponse("맞습니다. 죄송합니다. 다시 고치겠습니다."), 1200);
+  const triggered = applyUserTurn(acknowledged, classifyUserPrompt("한다고 해놓고 또 안 했잖아."), 1300);
+  assert.equal(triggered.inject, true);
+  assert.equal(triggered.reason, "acknowledged_recurrence");
+  assert.equal(triggered.state.cooldownRemaining, 2);
+  assert.equal(triggered.state.recoveryInjected, true);
+});
+
+test("triggers repeated correction only after two correction signals", () => {
+  let state = createInitialState(1000);
+  let result = applyUserTurn(state, classifyUserPrompt("그게 아니라 내가 요청한 건 설치만 하는 거였어."), 1100);
+  assert.equal(result.inject, false);
+  result = applyUserTurn(result.state, classifyUserPrompt("You said you would fix it and still did not."), 1200);
+  assert.equal(result.inject, true);
+  assert.equal(result.reason, "repeated_correction");
+});
+
+test("explicit health and repeated-tool diagnosis bypass cooldown", () => {
+  let state = createInitialState(1000);
+  let result = applyUserTurn(state, classifyUserPrompt("안 했잖아."), 1100);
+  result = applyUserTurn(result.state, classifyUserPrompt("또 안 했잖아."), 1200);
+  assert.equal(result.inject, true);
+  const health = applyUserTurn(result.state, classifyUserPrompt("세션 상태 점검이 필요해?"), 1300);
+  assert.equal(health.inject, true);
+  assert.equal(health.reason, "explicit_health_check");
+  const diagnosis = applyUserTurn(health.state, classifyUserPrompt("같은 툴 호출이 또 실패했어. 원인을 점검해줘."), 1400);
+  assert.equal(diagnosis.inject, true);
+  assert.equal(diagnosis.reason, "explicit_tool_diagnosis");
+});
+
+test("cooldown suppresses following prompts and expires without extending on neutral turns", () => {
+  let state = createInitialState(1000);
+  let result = applyUserTurn(state, classifyUserPrompt("안 했잖아."), 1100);
+  result = applyUserTurn(result.state, classifyUserPrompt("또 안 했잖아."), 1200);
+  const expiry = result.state.expiresAt;
+  result = applyUserTurn(result.state, classifyUserPrompt("계속 진행해."), 1300);
+  assert.equal(result.inject, false);
+  assert.equal(result.state.cooldownRemaining, 1);
+  assert.equal(result.state.expiresAt, expiry);
+  result = applyUserTurn(result.state, classifyUserPrompt("다시 설명해줘."), 1400);
+  assert.equal(result.state.cooldownRemaining, 0);
+  assert.equal(result.state.recoveryInjected, false);
+  const neutral = applyUserTurn(result.state, classifyUserPrompt("계속 진행해."), 1500);
+  assert.equal(neutral.state.expiresAt, expiry);
+});
+
+test("does not seed state from anger, neutral requests, or routine apology", () => {
+  const initial = createInitialState(1000);
+  const angry = applyUserTurn(initial, classifyUserPrompt("이게 뭐야!!!!!"), 1100);
+  assert.deepEqual(angry, { state: { ...initial }, inject: false, reason: null });
+  const apology = applyAssistantTurn(initial, classifyAssistantResponse("Sorry for the delay."), 1200);
+  assert.deepEqual(apology, initial);
+  const neutral = applyUserTurn(initial, classifyUserPrompt("다시 설명해줘."), 1300);
+  assert.deepEqual(neutral.state, initial);
+});
+
+test("refreshes expiry only for qualifying user signals", () => {
+  const initial = createInitialState(1000);
+  const neutral = applyUserTurn(initial, classifyUserPrompt("계속 진행해."), 5000);
+  assert.equal(neutral.state.expiresAt, 1000 + 24 * 60 * 60 * 1000);
+  const signal = applyUserTurn(initial, classifyUserPrompt("안 했잖아."), 5000);
+  assert.equal(signal.state.lastSignalAt, 5000);
+  assert.equal(signal.state.expiresAt, 5000 + 24 * 60 * 60 * 1000);
+});
