@@ -2,13 +2,13 @@
 
 English | [Korean](README.ko.md)
 
-AI Safe Driver helps an agent stop repeating the same failure, identify the evidence-backed cause, recover the current task, and recommend a fresh session only when the conversation can no longer be repaired reliably.
+AI Safe Driver steps in when an agent gets stuck making the same mistake. It stops the loop, works out what the evidence actually supports, and gets the task back on track. It suggests a new session only when the current conversation is too tangled to recover reliably.
 
-Its intentionally unreliable dashboard reports a metaphorical drift state only when asked, such as `Drifting safely. 0%` or `Drifting safely. 100%`. It does not add a footer to every answer, and it does not measure model weights, attention, or an actual internal drift percentage.
+The dashboard is deliberately a little ridiculous. When you ask for a health check, it may report `Drifting safely. 0%` or `Drifting safely. 100%`. It stays out of ordinary replies. The number is a rule-based label, not a reading of model weights, attention, or some hidden internal drift meter.
 
-At 75% or 100%, it asks `Would you like me to countersteer?` Countersteering means stopping the failing path and proposing one bounded recovery. Saying yes does not silently authorize file writes, tool retries, compaction, or clearing; consequential actions still require their own explicit approval.
+At 75% or 100%, it asks `Would you like me to countersteer?` That means stopping the approach that keeps failing and suggesting one limited way to recover. A yes only starts that discussion. It does not give the plugin permission to write files, retry tools, compact the conversation, or clear the session. Those actions still need separate approval.
 
-The plugin contains one shared skill and one dormant, permission-gated handover hook for Claude Code and Codex. It has no executable installer, MCP server, network code, or automatic update check. The hook does nothing unless the user has explicitly approved and armed a one-shot handover.
+Claude Code and Codex use the same skill. The plugin also includes a handover hook that normally does nothing. It runs only after you approve and prepare a one-time handover. There is no executable installer, MCP server, network code, or automatic update check.
 
 ## Install
 
@@ -19,7 +19,7 @@ The plugin contains one shared skill and one dormant, permission-gated handover 
 /plugin install ai-safe-driver@ai-safe-driver
 ```
 
-Invoke `/ai-safe-driver:ai-safe-driver`, or report a repeated mistake, unchanged failed tool call, ignored correction, or recurring output-format violation.
+Run `/ai-safe-driver:ai-safe-driver`, or just describe what is going wrong: the same mistake, the same failed tool call, an ignored correction, or an output format that keeps breaking.
 
 ### Codex
 
@@ -28,11 +28,11 @@ codex plugin marketplace add ssauma/ai-safe-driver
 codex plugin add ai-safe-driver@ai-safe-driver
 ```
 
-Start a new Codex session and invoke `$ai-safe-driver`, or describe the repeated failure in ordinary language.
+Start a new Codex session and run `$ai-safe-driver`. You can also describe the repeated failure in your own words.
 
-## Automatic invocation
+## What you can say
 
-Typical signals include:
+The skill can recognize requests like these:
 
 - `Why do you keep making the same mistake?`
 - `You ignored my correction again.`
@@ -44,37 +44,37 @@ Typical signals include:
 - `Are you operating normally?`
 - `Should we start a new session?`
 
-## What it changes
+## What it does
 
-- Stops an unchanged retry after the same failure repeats
-- Separates observed facts, direct causes, hypotheses, and unknowns
-- Reconstructs the latest instruction and discards superseded assumptions
-- Validates tool prerequisites or output contracts before trying again
-- Keeps the current session when recovery is reliable
-- Explains whether compaction would help, do nothing, or risk preserving the wrong state
-- Offers a concise handoff when compaction or a fresh session is genuinely warranted
-- Reloads an explicitly approved handover after `/compact` or `/clear`
+- Stops retrying the same thing unchanged after it fails repeatedly
+- Keeps observed facts, supported causes, hypotheses, and unknowns from getting mixed together
+- Goes back to your latest instruction instead of following an older assumption
+- Checks tool requirements or the exact output format before trying again
+- Stays in the current session when it can recover with confidence
+- Tells you whether compaction would help, make no difference, or preserve the wrong context
+- Suggests a short handover when compaction or a new session is actually needed
+- Reloads that handover after `/compact` or `/clear`, but only when you approved it first
 
-The surface is self-deprecating black comedy. Underneath, the workflow follows disciplined AI engineering: preserve the latest contract, capture reproducible evidence, separate model-context failures from tool or environment failures, change one condition at a time, validate mechanically, bound retries, and escalate with a clean handoff.
+The jokes are self-deprecating. The recovery process is not. It returns to your latest instructions, records what actually failed, separates conversation problems from tool or environment problems, changes one condition at a time, checks the result, limits retries, and leaves a clean handover when the session needs to end.
 
 ## On-demand drift check
 
-When explicitly asked whether the conversation is operating normally or drifting, the skill returns a rule-based 0%, 25%, 50%, 75%, or 100% assessment. It also explains the recurring cause supported by evidence, whether the current session can recover, whether compaction is useful, and why a fresh session is or is not recommended. It does not display this status on ordinary responses.
+Ask whether the conversation is drifting and the skill will choose 0%, 25%, 50%, 75%, or 100% from visible failure patterns. Before showing the number, it explains what keeps going wrong, whether the current session can recover, whether compaction would help, and whether a new session makes sense. Ordinary replies do not get a status line.
 
-For a 75% or 100% result, the diagnosis ends with the dashboard and then asks whether to countersteer. Lower-risk checks do not add the question just for the joke.
+At 75% or 100%, the diagnosis ends with the dashboard and the countersteering question. At lower levels, it does not add the question just to land the joke.
 
-Compaction can help when the current goal and exact output contract are clear but a long, redundant history is competing for attention. Before compacting, the skill pins the required format, keys, exclusions, and one valid example in the handoff. It does not repair authentication, permissions, network state, invalid tool arguments, or a missing fact. It can make drift worse when a summary preserves a stale assumption or omits the user's latest correction.
+Compaction is useful when the goal and required output are still clear but the conversation has become long and repetitive. Before recommending it, the skill writes down the format, required keys, exclusions, and one valid example for the handover. Compaction cannot fix authentication, permissions, network trouble, bad tool arguments, or missing facts. It may make things worse if the summary keeps an old assumption or drops your latest correction.
 
 ## Permission-gated handover
 
-Diagnosis is read-only. A high-risk result may offer a handover, but the skill must obtain separate runtime approval before it:
+Diagnosis is read-only. A high-risk result may suggest a handover, but the skill asks separately before it:
 
 1. creates or replaces `.ai-safe-driver/handover.md`; and
 2. arms one specific transition: `compact` or `clear`.
 
-Installation and hook trust do not count as either approval. The user still enters `/compact` or `/clear`; the plugin never invokes those commands on its own. `/compact` keeps the conversation but summarizes its context. `/clear` starts a fresh chat and is therefore presented as the more disruptive option.
+Installing the plugin or trusting its hook does not approve either action. You still type `/compact` or `/clear` yourself; the plugin never runs those commands for you. `/compact` summarizes the current conversation and keeps going. `/clear` starts a new chat, so the skill treats it as the more disruptive choice.
 
-The bundled `SessionStart` hook is one-shot. It loads the handover only when a short-lived approval record matches the transition and the handover checksum. It then removes the approval record while keeping the handover for inspection. If no valid approval is present, the hook exits without output or changes. Claude Code and Codex both require users to review and trust non-managed plugin hooks before they run.
+The bundled `SessionStart` hook works once per approval. It loads the handover only when the requested transition and file checksum match a short-lived approval record. Afterward, it removes the approval record but leaves the handover file for inspection. Without valid approval, the hook exits quietly and changes nothing. Claude Code and Codex may also ask you to review and trust this third-party hook before running it.
 
 ## Contributing
 
