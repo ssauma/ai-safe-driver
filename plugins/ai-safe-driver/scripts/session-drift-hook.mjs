@@ -97,6 +97,11 @@ const assertRegularFile = async (file) => {
   return info;
 };
 
+const hasIdentity = (info, identity) => info.isFile()
+  && !info.isSymbolicLink()
+  && info.dev === identity.dev
+  && info.ino === identity.ino;
+
 const testBarrier = async (point) => {
   const directory = TEST_MODE && process.env.AI_SAFE_DRIVER_TEST_BARRIER_DIR;
   if (!directory || process.env.AI_SAFE_DRIVER_TEST_BARRIER !== point) return;
@@ -214,7 +219,8 @@ const pruneExpired = async () => {
       });
     } catch (error) {
       if (isMissing(error)) continue;
-      throw error;
+      // A corrupt record must not suppress processing of independent sessions.
+      continue;
     }
   }
 };
@@ -231,14 +237,20 @@ const writeLock = async (file, owner) => {
 };
 
 const discardExpiredLock = async (file, record) => {
+  if (!record) return false;
+  if (record.valid && record.lock.leaseExpiresAt > Date.now()) return false;
+  if (!record.valid && Date.now() - (await assertRegularFile(file)).mtimeMs <= LOCK_LEASE_MS) return false;
+  await testBarrier("before-stale-lock-unlink");
   const current = await readLock(file);
-  if (!current || !current.valid) {
-    if (current) await rm(file);
-    return;
-  }
-  if (current.lock.owner !== record.lock.owner || current.lock.leaseExpiresAt !== record.lock.leaseExpiresAt) return;
-  if (current.lock.leaseExpiresAt > Date.now()) return;
+  if (!current || current.identity.dev !== record.identity.dev || current.identity.ino !== record.identity.ino) return false;
+  if (record.valid !== current.valid) return false;
+  if (record.valid && (
+    current.lock.owner !== record.lock.owner
+    || current.lock.leaseExpiresAt !== record.lock.leaseExpiresAt
+    || current.lock.leaseExpiresAt > Date.now()
+  )) return false;
   await rm(file);
+  return true;
 };
 
 const acquireLock = async (file) => {
@@ -253,7 +265,7 @@ const acquireLock = async (file) => {
   if (!existing) return undefined;
   if (existing.valid && existing.lock.leaseExpiresAt > Date.now()) return undefined;
   if (!existing.valid && Date.now() - (await assertRegularFile(file)).mtimeMs <= LOCK_LEASE_MS) return undefined;
-  await discardExpiredLock(file, existing);
+  if (!(await discardExpiredLock(file, existing))) return undefined;
   const retryCreateLock = async () => {
     return writeLock(file, owner);
   };
