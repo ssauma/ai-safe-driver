@@ -694,6 +694,75 @@ test("pruning bounds expired historical guards without deleting active foreign g
   assert.deepEqual(JSON.parse(readFileSync(activeAdjacentGuard, "utf8")), adjacentRecord);
 });
 
+test("cleanup bounds expired guards orphaned under prior lock identities", () => {
+  const root = makeStateDir("orphaned-identity-guards");
+  const sessionId = "session-orphaned-identity-guards";
+  const now = 4_000_000;
+  const epochMs = 1_000;
+  const epoch = now / epochMs;
+  const extraEnv = {
+    AI_SAFE_DRIVER_TEST_NOW_MS: String(now),
+    AI_SAFE_DRIVER_TEST_RECLAIM_EPOCH_MS: String(epochMs),
+  };
+  const staleLock = lockFile(root, sessionId);
+  writeFileSync(staleLock, JSON.stringify({ owner: "expired-hook", leaseExpiresAt: now - 1 }), { mode: 0o600 });
+  const successorIdentity = lstatSync(staleLock);
+  const orphanedGuards = Array.from({ length: 6 }, (_, index) => {
+    const orphanIdentity = { dev: successorIdentity.dev + index + 1, ino: successorIdentity.ino + index + 1 };
+    const guardEpoch = epoch - index - 3;
+    const file = reclaimerGuardFile(root, sessionId, orphanIdentity, guardEpoch);
+    writeFileSync(file, JSON.stringify({
+      owner: `crashed-prior-identity-${index}`,
+      leaseExpiresAt: now - 1,
+      lockDev: orphanIdentity.dev,
+      lockIno: orphanIdentity.ino,
+      epoch: guardEpoch,
+    }), { mode: 0o600 });
+    return file;
+  });
+
+  assertNoOutput(runDriftHook(root, {
+    hook_event_name: "UserPromptSubmit", session_id: sessionId, prompt: "안 했잖아.",
+  }, extraEnv));
+  assert.equal(readState(root, sessionId).correctionCount, 1);
+  for (const orphanedGuard of orphanedGuards) assert.equal(existsSync(orphanedGuard), false);
+});
+
+test("an active adjacent guard is found behind more than 128 historical or malformed entries", () => {
+  const root = makeStateDir("guard-discovery-boundary");
+  const sessionId = "session-guard-discovery-boundary";
+  const now = 5_000_000;
+  const epochMs = 1_000;
+  const epoch = now / epochMs;
+  const extraEnv = {
+    AI_SAFE_DRIVER_TEST_NOW_MS: String(now),
+    AI_SAFE_DRIVER_TEST_RECLAIM_EPOCH_MS: String(epochMs),
+  };
+  const staleLock = lockFile(root, sessionId);
+  writeFileSync(staleLock, JSON.stringify({ owner: "expired-hook", leaseExpiresAt: now - 1 }), { mode: 0o600 });
+  const identity = lstatSync(staleLock);
+  const prefix = `${staleLock}.reclaim.`;
+  for (let index = 0; index < 130; index += 1) {
+    writeFileSync(`${prefix}000-${String(index).padStart(3, "0")}.0`, "malformed", { mode: 0o600 });
+  }
+  const activeGuard = reclaimerGuardFile(root, sessionId, identity, epoch - 1);
+  const activeRecord = {
+    owner: "hidden-adjacent-reclaimer",
+    leaseExpiresAt: now + epochMs,
+    lockDev: identity.dev,
+    lockIno: identity.ino,
+    epoch: epoch - 1,
+  };
+  writeFileSync(activeGuard, JSON.stringify(activeRecord), { mode: 0o600 });
+  assert.ok(readdirSync(root).indexOf(path.basename(activeGuard)) > 128);
+
+  assertNoOutput(runDriftHook(root, {
+    hook_event_name: "UserPromptSubmit", session_id: sessionId, prompt: "안 했잖아.",
+  }, extraEnv));
+  assert.equal(existsSync(stateFile(root, sessionId)), false);
+  assert.deepEqual(JSON.parse(readFileSync(activeGuard, "utf8")), activeRecord);
+});
+
 test("a malformed state for one session cannot suppress another session's recovery cycle", () => {
   const root = makeStateDir("corrupt-session-isolation");
   const corruptSession = "session-corrupt";
