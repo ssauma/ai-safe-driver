@@ -26,6 +26,24 @@ test("classifies user correction and recurrence signals across supported languag
   }
 });
 
+test("recognizes native repeated-correction complaint shapes", () => {
+  const cases = [
+    ["How many times do I have to tell you? You keep returning the wrong format.", { recurrence: true, protest: true }],
+    ["I already told you, and it still has not changed.", { correction: true, recurrence: true }],
+    ["You acknowledged the problem, but did the exact same thing again.", { correction: true, recurrence: true }],
+    ["我说了多少遍了，怎么还是没改？", { recurrence: true, protest: true }],
+    ["不是说已经修好了吗？怎么又漏了字段？", { correction: true, recurrence: true, protest: true }],
+    ["我都說過多少次了，怎麼還是錯的？", { correction: true, recurrence: true, protest: true }],
+    ["何回同じことを言わせるの？ また形式が戻っています。", { recurrence: true, protest: true }],
+    ["直したと言ったのに、また同じ間違いです。", { correction: true, recurrence: true }],
+    ["承知しましたと言ったのに、形式がまた元に戻っています。", { correction: true, recurrence: true }],
+  ];
+  for (const [text, expected] of cases) {
+    const actual = classifyUserPrompt(text);
+    for (const [key, value] of Object.entries(expected)) assert.equal(actual[key], value, text);
+  }
+});
+
 test("classifies assistant acknowledgment without treating it as a trigger", () => {
   for (const text of [
     "맞습니다. 요청한 항목을 넣지 않았습니다. 죄송합니다. 다시 고치겠습니다.",
@@ -61,6 +79,23 @@ test("does not treat neutral recurrence words as a repeated failure", () => {
     "请再解释一次。", "还有一个问题。", "请继续处理。",
     "このまま続けてください。", "また後で確認します。", "別の質問があります。",
   ]) assert.equal(classifyUserPrompt(text).recurrence, false, text);
+});
+
+test("does not confuse ordinary multilingual recurrence grammar with a complaint", () => {
+  for (const text of [
+    "I still need to update the format.",
+    "How many times should the test run?",
+    "还是选择 JSON 格式吧。",
+    "還是選擇 JSON 格式吧。",
+    "我又加了一个字段。",
+    "また同じ形式でお願いします。",
+    "何回テストを実行しますか？",
+  ]) {
+    const signals = classifyUserPrompt(text);
+    assert.equal(signals.correction, false, text);
+    assert.equal(signals.recurrence, false, text);
+    assert.equal(signals.protest, false, text);
+  }
 });
 
 test("recognizes additional correction shapes without using emotion as proof", () => {
