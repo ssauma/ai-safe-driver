@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, lstat, mkdir, open, readdir, readFile, rename, rm } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, mkdir, open, readdir, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -14,14 +15,14 @@ import {
 
 const MAX_INPUT_BYTES = 256 * 1024;
 const MAX_CONTEXT_BYTES = 4096;
-const LOCK_STALE_MS = 5 * 60 * 1000;
-const configuredTestRoot = process.env.AI_SAFE_DRIVER_TEST_MODE === "1"
+const LOCK_LEASE_MS = 30 * 1000;
+const TEST_MODE = process.env.AI_SAFE_DRIVER_TEST_MODE === "1";
+const configuredTestRoot = TEST_MODE
   ? process.env.AI_SAFE_DRIVER_STATE_DIR
   : undefined;
 const root = path.resolve(configuredTestRoot || path.join(tmpdir(), "ai-safe-driver"));
 const sessionKey = (id) => createHash("sha256").update(id).digest("hex").slice(0, 32);
 const statePath = (id) => path.join(root, `${sessionKey(id)}.json`);
-const lockPath = (id) => `${statePath(id)}.lock`;
 
 const readStdin = async () => {
   let raw = "";
@@ -45,15 +46,31 @@ const recoveryContext = (reason) => [
 
 const isMissing = (error) => error && error.code === "ENOENT";
 const isSessionId = (value) => typeof value === "string" && value.length > 0;
+const STATE_KEYS = [
+  "schema",
+  "correctionCount",
+  "protestCount",
+  "recurrenceCount",
+  "assistantAcknowledged",
+  "repairPromised",
+  "lastSignalAt",
+  "cooldownRemaining",
+  "recoveryInjected",
+  "expiresAt",
+];
 
 const ensureRoot = async () => {
   await mkdir(root, { recursive: true, mode: 0o700 });
-  const info = await lstat(root);
-  if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("unsafe state root");
-  await chmod(root, 0o700);
+  const handle = await open(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    if (!(await handle.stat()).isDirectory()) throw new Error("unsafe state root");
+    await handle.chmod(0o700);
+  } finally {
+    await handle.close();
+  }
 };
 
-const isValidState = (value) => value !== null
+const hasStateFields = (value) => value !== null
   && typeof value === "object"
   && value.schema === STATE_SCHEMA
   && Number.isFinite(value.correctionCount)
@@ -66,27 +83,90 @@ const isValidState = (value) => value !== null
   && typeof value.recoveryInjected === "boolean"
   && Number.isFinite(value.expiresAt);
 
+const canonicalState = (value) => {
+  if (!hasStateFields(value)) throw new Error("invalid state schema");
+  return Object.fromEntries(STATE_KEYS.map((key) => [key, value[key]]));
+};
+
+const hasOnlyStateKeys = (value) => Object.keys(value).length === STATE_KEYS.length
+  && STATE_KEYS.every((key) => Object.hasOwn(value, key));
+
 const assertRegularFile = async (file) => {
   const info = await lstat(file);
   if (!info.isFile() || info.isSymbolicLink()) throw new Error("unsafe state file");
   return info;
 };
 
-const loadState = async (id) => {
-  const file = statePath(id);
+const testBarrier = async (point) => {
+  const directory = TEST_MODE && process.env.AI_SAFE_DRIVER_TEST_BARRIER_DIR;
+  if (!directory || process.env.AI_SAFE_DRIVER_TEST_BARRIER !== point) return;
+  const ready = path.join(directory, `${point}.ready`);
+  const proceed = path.join(directory, `${point}.continue`);
+  const handle = await open(ready, "wx", 0o600);
+  await handle.close();
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    try {
+      await lstat(proceed);
+      return;
+    } catch (error) {
+      if (!isMissing(error)) throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("test barrier timed out");
+};
+
+const readRegularFile = async (file) => {
+  const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const info = await handle.stat();
+    if (!info.isFile()) throw new Error("unsafe state file");
+    return { content: await handle.readFile("utf8"), identity: { dev: info.dev, ino: info.ino } };
+  } finally {
+    await handle.close();
+  }
+};
+
+const readStateFile = async (file) => {
   try {
     await assertRegularFile(file);
   } catch (error) {
     if (isMissing(error)) return undefined;
     throw error;
   }
-  const parsed = JSON.parse(await readFile(file, "utf8"));
-  if (!isValidState(parsed)) throw new Error("invalid state schema");
-  return parsed;
+  await testBarrier("before-state-open");
+  const { content, identity } = await readRegularFile(file);
+  const parsed = JSON.parse(content);
+  return { state: canonicalState(parsed), canonicalized: !hasOnlyStateKeys(parsed), identity };
+};
+
+const loadState = async (id) => readStateFile(statePath(id));
+
+const readLock = async (file) => {
+  let record;
+  try {
+    record = await readRegularFile(file);
+  } catch (error) {
+    if (isMissing(error)) return undefined;
+    throw error;
+  }
+  let lock;
+  try {
+    lock = JSON.parse(record.content);
+  } catch {
+    return { ...record, valid: false };
+  }
+  const valid = lock !== null
+    && typeof lock === "object"
+    && typeof lock.owner === "string"
+    && lock.owner.length > 0
+    && Number.isFinite(lock.leaseExpiresAt);
+  return { ...record, valid, lock };
 };
 
 const writeStateAtomically = async (id, state) => {
-  if (!isValidState(state)) throw new Error("refusing invalid state");
+  const serializedState = canonicalState(state);
   await ensureRoot();
   const file = statePath(id);
   try {
@@ -99,8 +179,7 @@ const writeStateAtomically = async (id, state) => {
   let handle;
   try {
     handle = await open(temporary, "wx", 0o600);
-    await chmod(temporary, 0o600);
-    await handle.writeFile(JSON.stringify(state), "utf8");
+    await handle.writeFile(JSON.stringify(serializedState), "utf8");
     await handle.sync();
     await handle.close();
     handle = undefined;
@@ -111,7 +190,6 @@ const writeStateAtomically = async (id, state) => {
       if (!isMissing(error)) throw error;
     }
     await rename(temporary, file);
-    await chmod(file, 0o600);
   } finally {
     if (handle) await handle.close();
     await rm(temporary, { force: true }).catch(() => undefined);
@@ -125,12 +203,15 @@ const pruneExpired = async () => {
     if (!entry.name.endsWith(".json") || entry.isSymbolicLink() || !entry.isFile()) continue;
     const file = path.join(root, entry.name);
     try {
-      await assertRegularFile(file);
-      const parsed = JSON.parse(await readFile(file, "utf8"));
-      if (isValidState(parsed) && parsed.expiresAt <= Date.now()) {
-        await assertRegularFile(file);
+      await withFileLock(file, async () => {
+        const record = await readStateFile(file);
+        if (!record || record.state.expiresAt > Date.now()) return;
+        await testBarrier("after-expired-state-read");
+        const current = await lstat(file);
+        if (!current.isFile() || current.isSymbolicLink()) return;
+        if (current.dev !== record.identity.dev || current.ino !== record.identity.ino) return;
         await rm(file);
-      }
+      });
     } catch (error) {
       if (isMissing(error)) continue;
       throw error;
@@ -138,42 +219,73 @@ const pruneExpired = async () => {
   }
 };
 
-const acquireLock = async (id) => {
-  const file = lockPath(id);
-  const createLock = async () => {
-    const handle = await open(file, "wx", 0o600);
-    await chmod(file, 0o600);
-    await handle.close();
-    return file;
-  };
+const writeLock = async (file, owner) => {
+  const handle = await open(file, "wx", 0o600);
   try {
-    return await createLock();
+    await handle.writeFile(JSON.stringify({ owner, leaseExpiresAt: Date.now() + LOCK_LEASE_MS }), "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  return { file, owner };
+};
+
+const discardExpiredLock = async (file, record) => {
+  const current = await readLock(file);
+  if (!current || !current.valid) {
+    if (current) await rm(file);
+    return;
+  }
+  if (current.lock.owner !== record.lock.owner || current.lock.leaseExpiresAt !== record.lock.leaseExpiresAt) return;
+  if (current.lock.leaseExpiresAt > Date.now()) return;
+  await rm(file);
+};
+
+const acquireLock = async (file) => {
+  const owner = randomUUID();
+  try {
+    return await writeLock(file, owner);
   } catch (error) {
     if (!error || error.code !== "EEXIST") throw error;
   }
 
-  const existing = await assertRegularFile(file);
-  if (Date.now() - existing.mtimeMs <= LOCK_STALE_MS) return undefined;
-  await assertRegularFile(file);
-  await rm(file);
+  const existing = await readLock(file);
+  if (!existing) return undefined;
+  if (existing.valid && existing.lock.leaseExpiresAt > Date.now()) return undefined;
+  if (!existing.valid && Date.now() - (await assertRegularFile(file)).mtimeMs <= LOCK_LEASE_MS) return undefined;
+  await discardExpiredLock(file, existing);
+  const retryCreateLock = async () => {
+    return writeLock(file, owner);
+  };
   try {
-    return await createLock();
+    return await retryCreateLock();
   } catch (error) {
-    if (error && error.code === "EEXIST") return undefined;
-    throw error;
+    if (!error || error.code !== "EEXIST") throw error;
   }
+  return undefined;
 };
 
-const withSessionLock = async (id, callback) => {
+const releaseLock = async ({ file, owner }) => {
+  const current = await readLock(file);
+  if (!current || !current.valid || current.lock.owner !== owner) return;
+  await testBarrier("before-lock-release");
+  const confirmation = await readLock(file);
+  if (!confirmation || !confirmation.valid || confirmation.lock.owner !== owner) return;
+  await rm(file);
+};
+
+const withFileLock = async (file, callback) => {
   await ensureRoot();
-  const file = await acquireLock(id);
-  if (!file) return undefined;
+  const lock = await acquireLock(`${file}.lock`);
+  if (!lock) return undefined;
   try {
     return await callback();
   } finally {
-    await rm(file, { force: true }).catch(() => undefined);
+    await releaseLock(lock).catch(() => undefined);
   }
 };
+
+const withSessionLock = (id, callback) => withFileLock(statePath(id), callback);
 
 const statesEqual = (left, right) => (
   left.schema === right.schema
@@ -198,14 +310,15 @@ const handleUserPrompt = async (input) => {
 
   await pruneExpired();
   return withSessionLock(input.session_id, async () => {
-    const existing = await loadState(input.session_id);
+    const loaded = await loadState(input.session_id);
+    const existing = loaded?.state;
     const initial = existing || createInitialState();
     const result = applyUserTurn(initial, signals);
     if (!existing) {
       const hasSignal = signals.correction || signals.protest || signals.recurrence
         || signals.explicitHealthCheck || signals.explicitToolDiagnosis;
       if (hasSignal) await writeStateAtomically(input.session_id, result.state);
-    } else if (!statesEqual(existing, result.state)) {
+    } else if (loaded.canonicalized || !statesEqual(existing, result.state)) {
       await writeStateAtomically(input.session_id, result.state);
     }
     return result.inject ? result.reason : undefined;
@@ -216,10 +329,11 @@ const handleStop = async (input) => {
   if (!isSessionId(input.session_id)) return;
   await pruneExpired();
   await withSessionLock(input.session_id, async () => {
-    const existing = await loadState(input.session_id);
+    const loaded = await loadState(input.session_id);
+    const existing = loaded?.state;
     if (!existing) return;
     const next = applyAssistantTurn(existing, classifyAssistantResponse(input.last_assistant_message));
-    if (!statesEqual(existing, next)) await writeStateAtomically(input.session_id, next);
+    if (loaded.canonicalized || !statesEqual(existing, next)) await writeStateAtomically(input.session_id, next);
   });
 };
 
