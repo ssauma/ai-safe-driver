@@ -82,6 +82,48 @@ test("explains direct and hook-triggered recovery naturally in Korean", () => {
   ], "README.ko.md");
 });
 
+test("preserves the complete negative-signal boundary in user and skill guidance", () => {
+  const english = read("README.md");
+  assertMatchesAll(english, [
+    /Anger alone is not drift/i,
+    /capitalization/i,
+    /profanity/i,
+    /punctuation/i,
+    /repeated characters/i,
+  ], "README.md");
+
+  const korean = read("README.ko.md");
+  assertMatchesAll(korean, [
+    /화가 났다는 이유만으로[\s\S]{0,60}드리프트/,
+    /대문자/,
+    /욕설/,
+    /문장부호/,
+    /같은 글자 반복/,
+  ], "README.ko.md");
+
+  const skill = read(`${skillRoot}/SKILL.md`);
+  assert.match(
+    skill,
+    /Anger, profanity, capitalization, punctuation, or repeated characters alone never raises the drift label/i,
+  );
+});
+
+test("pins the exact Claude Code and Codex remote install commands", () => {
+  const commands = [
+    "/plugin marketplace add ssauma/ai-safe-driver",
+    "/plugin install ai-safe-driver@ai-safe-driver",
+    "codex plugin marketplace add ssauma/ai-safe-driver",
+    "codex plugin add ai-safe-driver@ai-safe-driver",
+  ];
+
+  for (const filePath of ["README.md", "README.ko.md"]) {
+    const content = read(filePath);
+    for (const command of commands) {
+      assert.equal(content.includes(command), true, `${filePath} is missing ${command}`);
+    }
+  }
+});
+
 test("treats hook evidence as a recovery prompt rather than a final diagnosis", () => {
   const skill = read(`${skillRoot}/SKILL.md`);
   assertMatchesAll(skill, [
