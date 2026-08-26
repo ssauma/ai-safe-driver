@@ -83,7 +83,7 @@ const ensureRoot = async () => {
 
 const ensureReclaimerGuardRoot = async () => {
   await ensureRoot();
-  await mkdir(reclaimerGuardRoot, { mode: 0o700 });
+  await mkdir(reclaimerGuardRoot, { recursive: true, mode: 0o700 });
   const handle = await open(reclaimerGuardRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   try {
     if (!(await handle.stat()).isDirectory()) throw new Error("unsafe reclaimer guard root");
@@ -337,10 +337,14 @@ const cleanupHistoricalReclaimerGuards = async () => {
   const currentEpoch = reclaimerEpoch();
   let inspected = 0;
   let removed = 0;
+  let exhausted = false;
   try {
     while (inspected < MAX_RECLAIMER_GUARD_INSPECTIONS && removed < MAX_RECLAIMER_GUARD_CLEANUP) {
       const entry = await directory.read();
-      if (!entry) break;
+      if (!entry) {
+        exhausted = true;
+        break;
+      }
       inspected += 1;
       if (!entry.isFile() || entry.isSymbolicLink()) continue;
       const parts = guardNameParts(entry.name);
@@ -359,7 +363,7 @@ const cleanupHistoricalReclaimerGuards = async () => {
       }
     }
   } finally {
-    await directory.close();
+    if (!exhausted) await directory.close();
   }
 };
 
