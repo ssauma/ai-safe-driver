@@ -133,7 +133,7 @@ The percentage is a rule-based risk label, not a measurement of hidden model sta
 
 Show the dashboard only after the four-part explanation when the user explicitly asks whether the conversation is normal, drifting, healthy, or needs a new session:
 
-- Korean: `정상운행중입니다. 드리프트 <percentage>%`
-- Other languages: `Driving as intended. Drift <percentage>%`
+- Korean: `안전하게 드리프트중입니다. <percentage>%`
+- Other languages: `Drifting safely. <percentage>%`
 
 At `75%` or `100%`, put the countersteering question on the line immediately after the dashboard. Do not ask it at lower risk merely for comic effect. Do not append the dashboard or countersteering question to ordinary responses. If a health check also requires strict JSON, CSV, a fixed schema, an exact line count, or no extra text, the output contract wins. Do not raise the percentage merely because the user sounds angry.

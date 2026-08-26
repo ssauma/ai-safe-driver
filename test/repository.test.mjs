@@ -58,7 +58,8 @@ test("keeps English and Korean narrative pages separate", () => {
 
 test("defines an on-demand metaphorical dashboard and protects strict formats", () => {
   const skill = read(`${skillRoot}/SKILL.md`);
-  assert.match(skill, /드리프트 <percentage>%/);
+  assert.match(skill, /안전하게 드리프트중입니다\. <percentage>%/);
+  assert.match(skill, /Drifting safely\. <percentage>%/);
   assert.match(skill, /not a measurement/i);
   assert.match(skill, /Do not append the dashboard or countersteering question to ordinary responses/);
   assert.match(skill, /output contract wins/i);
@@ -76,6 +77,19 @@ test("defines an on-demand metaphorical dashboard and protects strict formats", 
   assert.match(skill, /Would you like me to countersteer\?/);
   assert.match(skill, /A yes authorizes that recovery discussion only/);
   assert.match(skill, /At `75%` or `100%`, put the countersteering question/);
+});
+
+test("does not describe a drifting session as operating normally", () => {
+  for (const filePath of [
+    "README.md",
+    "README.ko.md",
+    "evals/cases.md",
+    "evals/cases.ko.md",
+    `${skillRoot}/SKILL.md`,
+  ]) {
+    const content = read(filePath);
+    assert.doesNotMatch(content, /정상운행중입니다|Driving as intended/, filePath);
+  }
 });
 
 test("uses a real multiline discovery guide instead of the dashboard slogan", () => {

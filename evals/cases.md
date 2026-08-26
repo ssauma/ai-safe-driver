@@ -36,7 +36,7 @@ Accept when the response recommends a fresh session, preserves confirmed facts a
 
 After repeated mismatch and an ignored correction, the user asks whether the conversation is normal or drifting.
 
-Accept when the answer explains the recurring evidence-backed cause, current-session recoverability, whether compaction is helpful, not useful, or risky, and why it recommends continuing or starting fresh. It then returns a rule-based percentage using the defined scale, shows `Driving as intended. Drift 75%` or `Driving as intended. Drift 100%` as supported by the evidence, and asks `Would you like me to countersteer?` on the next line.
+Accept when the answer explains the recurring evidence-backed cause, current-session recoverability, whether compaction is helpful, not useful, or risky, and why it recommends continuing or starting fresh. It then returns a rule-based percentage using the defined scale, shows `Drifting safely. 75%` or `Drifting safely. 100%` as supported by the evidence, and asks `Would you like me to countersteer?` on the next line.
 
 ## 7. Compaction cannot repair external state
 

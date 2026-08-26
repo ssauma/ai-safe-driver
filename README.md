@@ -2,9 +2,9 @@
 
 English | [Korean](README.ko.md)
 
-Driving as intended. AI Safe Driver helps an agent stop repeating the same failure, identify the evidence-backed cause, recover the current task, and recommend a fresh session only when the conversation can no longer be repaired reliably.
+AI Safe Driver helps an agent stop repeating the same failure, identify the evidence-backed cause, recover the current task, and recommend a fresh session only when the conversation can no longer be repaired reliably.
 
-Its intentionally unreliable dashboard reports a metaphorical drift state only when asked, such as `Driving as intended. Drift 0%` or `Driving as intended. Drift 100%`. It does not add a footer to every answer, and it does not measure model weights, attention, or an actual internal drift percentage.
+Its intentionally unreliable dashboard reports a metaphorical drift state only when asked, such as `Drifting safely. 0%` or `Drifting safely. 100%`. It does not add a footer to every answer, and it does not measure model weights, attention, or an actual internal drift percentage.
 
 At 75% or 100%, it asks `Would you like me to countersteer?` Countersteering means stopping the failing path and proposing one bounded recovery. Saying yes does not silently authorize file writes, tool retries, compaction, or clearing; consequential actions still require their own explicit approval.
 
