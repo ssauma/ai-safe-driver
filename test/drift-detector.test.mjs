@@ -161,3 +161,49 @@ test("refreshes expiry only for qualifying user signals", () => {
   assert.equal(signal.state.lastSignalAt, 5000);
   assert.equal(signal.state.expiresAt, 5000 + 24 * 60 * 60 * 1000);
 });
+
+test("requires a health question or request around multilingual drift terms", () => {
+  for (const text of [
+    "漂移", "ドリフト", "今天天气有漂移吗？", "ドリフトという言葉を見た。",
+  ]) {
+    assert.equal(classifyUserPrompt(text).explicitHealthCheck, false, text);
+  }
+  for (const text of [
+    "对话是不是漂移了？需要检查会话状态吗？",
+    "会話がドリフトしていませんか？状態を確認しますか？",
+  ]) assert.equal(classifyUserPrompt(text).explicitHealthCheck, true, text);
+});
+
+test("does not treat unrelated Chinese weather complaints as drift", () => {
+  for (const text of ["怎么又下雨了？", "怎麼又下雨了？"]) {
+    const signals = classifyUserPrompt(text);
+    assert.equal(signals.correction, false, text);
+    assert.equal(signals.recurrence, false, text);
+    assert.equal(signals.protest, false, text);
+  }
+  let state = createInitialState(1000);
+  state = applyUserTurn(state, classifyUserPrompt("안 했잖아."), 1100).state;
+  const weather = applyUserTurn(state, classifyUserPrompt("怎么又下雨了？"), 1200);
+  assert.equal(weather.inject, false);
+  assert.equal(weather.state.correctionCount, 1);
+});
+
+test("classifies Chinese and Japanese assistant acknowledgment, apology, and repair", () => {
+  for (const text of [
+    "你说得对。我漏掉了要求。抱歉。我会修改。",
+    "你說得對。我忽略了要求。對不起。我會修正。",
+    "おっしゃる通り。見落としました。申し訳ありません。修正します。",
+  ]) {
+    const signals = classifyAssistantResponse(text);
+    assert.equal(signals.acknowledgment, true, text);
+    assert.equal(signals.apology, true, text);
+    assert.equal(signals.repairPromise, true, text);
+  }
+});
+
+test("routine Chinese and Japanese apologies cannot seed a recovery cycle", () => {
+  const initial = createInitialState(1000);
+  for (const text of ["抱歉，刚才回复晚了。", "對不起，稍等一下。", "すみません、遅れました。", "申し訳ありません、確認します。"]) {
+    assert.deepEqual(applyAssistantTurn(initial, classifyAssistantResponse(text), 1100), initial, text);
+  }
+});
