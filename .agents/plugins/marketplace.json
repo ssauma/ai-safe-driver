@@ -1,0 +1,21 @@
+{
+  "name": "ai-safe-driver",
+  "interface": {
+    "displayName": "AI Safe Driver"
+  },
+  "plugins": [
+    {
+      "name": "ai-safe-driver",
+      "version": "0.1.0",
+      "source": {
+        "source": "local",
+        "path": "./plugins/ai-safe-driver"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

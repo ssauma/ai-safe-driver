@@ -1,0 +1,28 @@
+{
+  "name": "ai-safe-driver",
+  "version": "0.1.0",
+  "description": "Recover from repeated mistakes, failed tool calls, format violations, and conversation drift.",
+  "author": {
+    "name": "Kai",
+    "url": "https://github.com/ssauma"
+  },
+  "homepage": "https://github.com/ssauma/ai-safe-driver",
+  "repository": "https://github.com/ssauma/ai-safe-driver",
+  "license": "MIT",
+  "keywords": ["recovery", "drift", "tool-calling", "output-format", "agent-skills"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "AI Safe Driver",
+    "shortDescription": "Recover from repeated failures and drift",
+    "longDescription": "Stop repeated agent mistakes, diagnose evidence-backed causes, repair tool or output failures, and recommend a fresh session only when the current conversation is no longer reliable.",
+    "developerName": "Kai",
+    "category": "Productivity",
+    "capabilities": ["Skills"],
+    "websiteURL": "https://github.com/ssauma/ai-safe-driver",
+    "defaultPrompt": [
+      "Why do you keep making the same mistake?",
+      "Diagnose this repeated tool failure without retrying blindly.",
+      "Are we drifting, or can this session recover?"
+    ]
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "description": "Reload a short-lived, explicitly approved AI Safe Driver handover after compaction or clear.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "compact|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/reinject-handover.mjs\"",
+            "timeout": 5,
+            "statusMessage": "Checking for an approved AI Safe Driver handover",
+            "additionalContextLimit": 5000
+          }
+        ]
+      }
+    ]
+  }
+}

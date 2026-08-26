@@ -1,0 +1,4 @@
+interface:
+  display_name: "AI Safe Driver"
+  short_description: "Recover from repeated failures and drift"
+  default_prompt: "Use $ai-safe-driver to diagnose this repeated failure and recover without making excuses."

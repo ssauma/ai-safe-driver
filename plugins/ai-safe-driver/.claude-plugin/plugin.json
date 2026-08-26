@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "ai-safe-driver",
+  "displayName": "AI Safe Driver",
+  "description": "Recover from repeated mistakes, failed tool calls, format violations, and conversation drift.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Kai",
+    "url": "https://github.com/ssauma"
+  },
+  "homepage": "https://github.com/ssauma/ai-safe-driver",
+  "repository": "https://github.com/ssauma/ai-safe-driver",
+  "license": "MIT",
+  "keywords": ["recovery", "drift", "tool-calling", "output-format", "agent-skills"]
+}
