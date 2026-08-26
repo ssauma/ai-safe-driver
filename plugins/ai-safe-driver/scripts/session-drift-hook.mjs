@@ -17,6 +17,8 @@ const MAX_INPUT_BYTES = 256 * 1024;
 const MAX_CONTEXT_BYTES = 4096;
 const LOCK_LEASE_MS = 30 * 1000;
 const RECLAIM_GUARD_LEASE_MS = LOCK_LEASE_MS;
+const MAX_RECLAIMER_GUARD_SCAN = 64;
+const ACTIVE_GUARD_EPOCH_WINDOW = 1;
 const TEST_MODE = process.env.AI_SAFE_DRIVER_TEST_MODE === "1";
 const testNow = Number(process.env.AI_SAFE_DRIVER_TEST_NOW_MS);
 const testEpochMs = Number(process.env.AI_SAFE_DRIVER_TEST_RECLAIM_EPOCH_MS);
@@ -282,22 +284,28 @@ const writeReclaimerGuard = async (file, owner, lockIdentity, epoch) => {
   return { file, owner };
 };
 
-const isActiveRelevantGuard = (record, lockIdentity) => record?.valid
-  && record.lock.lockDev === lockIdentity.dev
-  && record.lock.lockIno === lockIdentity.ino
-  && Number.isFinite(record.lock.epoch)
-  && record.lock.leaseExpiresAt > clockNow();
-
 const activeReclaimerGuards = async (lockFile, lockIdentity) => {
   const prefix = `${path.basename(lockFile)}.reclaim.`;
   const entries = await readdir(root, { withFileTypes: true });
   const active = [];
+  const currentEpoch = reclaimerEpoch();
+  let inspected = 0;
   for (const entry of entries) {
     if (!entry.isFile() || entry.isSymbolicLink() || !entry.name.startsWith(prefix)) continue;
+    if (inspected >= MAX_RECLAIMER_GUARD_SCAN) break;
+    inspected += 1;
     try {
       const file = path.join(root, entry.name);
       const record = await readReclaimerGuard(file);
-      if (isActiveRelevantGuard(record, lockIdentity)) active.push({ file, record });
+      if (!record?.valid || !Number.isFinite(record.lock.epoch)) continue;
+      if (record.lock.lockDev !== lockIdentity.dev || record.lock.lockIno !== lockIdentity.ino) continue;
+      const expected = reclaimerGuardPath(lockFile, lockIdentity, record.lock.epoch);
+      if (file !== expected) continue;
+      if (record.lock.leaseExpiresAt > clockNow()) {
+        active.push({ file, record });
+        continue;
+      }
+      if (record.lock.epoch <= currentEpoch - ACTIVE_GUARD_EPOCH_WINDOW - 1) await rm(file);
     } catch (error) {
       if (!isMissing(error)) continue;
     }
