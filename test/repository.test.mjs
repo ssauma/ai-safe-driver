@@ -22,7 +22,9 @@ test("ships one canonical skill for both hosts", () => {
     `${skillRoot}/SKILL.md`,
     `${skillRoot}/agents/openai.yaml`,
     `${pluginRoot}/hooks/hooks.json`,
+    `${pluginRoot}/scripts/drift-detector.mjs`,
     `${pluginRoot}/scripts/reinject-handover.mjs`,
+    `${pluginRoot}/scripts/session-drift-hook.mjs`,
     `${pluginRoot}/templates/handover.md`,
   ]) {
     assert.equal(existsSync(path), true, `missing ${path}`);
@@ -100,13 +102,29 @@ test("uses a real multiline discovery guide instead of the dashboard slogan", ()
   assert.match(skill, /conversation health check/);
 });
 
-test("ships only a permission-gated SessionStart hook", () => {
+test("ships drift detection hooks and keeps handover permission gated", () => {
   const hookConfig = json(`${pluginRoot}/hooks/hooks.json`);
-  assert.deepEqual(Object.keys(hookConfig.hooks), ["SessionStart"]);
+  assert.deepEqual(Object.keys(hookConfig.hooks).sort(), ["SessionStart", "Stop", "UserPromptSubmit"]);
+
+  const promptHook = hookConfig.hooks.UserPromptSubmit[0].hooks[0];
+  assert.equal(promptHook.type, "command");
+  assert.equal(promptHook.command, 'node "${CLAUDE_PLUGIN_ROOT}/scripts/session-drift-hook.mjs"');
+  assert.equal(promptHook.timeout, 5);
+  assert.equal(promptHook.statusMessage, "Checking for a repeated correction cycle");
+  assert.equal(promptHook.additionalContextLimit, 4096);
+
+  const stopHook = hookConfig.hooks.Stop[0].hooks[0];
+  assert.deepEqual(Object.keys(stopHook).sort(), ["command", "timeout", "type"]);
+  assert.equal(stopHook.type, "command");
+  assert.equal(stopHook.command, 'node "${CLAUDE_PLUGIN_ROOT}/scripts/session-drift-hook.mjs"');
+  assert.equal(stopHook.timeout, 5);
+
   assert.equal(hookConfig.hooks.SessionStart[0].matcher, "compact|clear");
-  const command = hookConfig.hooks.SessionStart[0].hooks[0].command;
-  assert.match(command, /reinject-handover\.mjs/);
-  assert.doesNotMatch(command, /\/compact|\/clear/);
+  assert.match(hookConfig.hooks.SessionStart[0].hooks[0].command, /reinject-handover\.mjs/);
+  for (const event of ["UserPromptSubmit", "Stop", "SessionStart"]) {
+    const command = hookConfig.hooks[event][0].hooks[0].command;
+    assert.doesNotMatch(command, /\/compact|\/clear/);
+  }
 });
 
 test("contains no installers, MCP, app, or network components", () => {
