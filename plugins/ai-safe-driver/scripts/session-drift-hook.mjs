@@ -17,7 +17,7 @@ const MAX_INPUT_BYTES = 256 * 1024;
 const MAX_CONTEXT_BYTES = 4096;
 const LOCK_LEASE_MS = 30 * 1000;
 const RECLAIM_GUARD_LEASE_MS = LOCK_LEASE_MS;
-const MAX_RECLAIMER_GUARD_SCAN = 64;
+const MAX_RECLAIMER_GUARD_CLEANUP = 64;
 const ACTIVE_GUARD_EPOCH_WINDOW = 1;
 const TEST_MODE = process.env.AI_SAFE_DRIVER_TEST_MODE === "1";
 const testNow = Number(process.env.AI_SAFE_DRIVER_TEST_NOW_MS);
@@ -284,36 +284,62 @@ const writeReclaimerGuard = async (file, owner, lockIdentity, epoch) => {
   return { file, owner };
 };
 
+const guardNameParts = (name) => {
+  const match = /^(.+\.json\.lock)\.reclaim\.(\d+)-(\d+)\.(\d+)$/u.exec(name);
+  if (!match) return undefined;
+  return {
+    lockName: match[1],
+    lockDev: Number(match[2]),
+    lockIno: Number(match[3]),
+    epoch: Number(match[4]),
+  };
+};
+
+const isExactActiveGuard = (record, lockIdentity, epoch) => record?.valid
+  && record.lock.lockDev === lockIdentity.dev
+  && record.lock.lockIno === lockIdentity.ino
+  && record.lock.epoch === epoch
+  && record.lock.leaseExpiresAt > clockNow();
+
 const activeReclaimerGuards = async (lockFile, lockIdentity) => {
-  const prefix = `${path.basename(lockFile)}.reclaim.`;
-  const entries = await readdir(root, { withFileTypes: true });
   const active = [];
-  const currentEpoch = reclaimerEpoch();
-  let inspected = 0;
-  for (const entry of entries) {
-    if (!entry.isFile() || entry.isSymbolicLink() || !entry.name.startsWith(prefix)) continue;
-    if (inspected >= MAX_RECLAIMER_GUARD_SCAN) break;
-    inspected += 1;
+  for (const epoch of [reclaimerEpoch(), reclaimerEpoch() - ACTIVE_GUARD_EPOCH_WINDOW]) {
+    const file = reclaimerGuardPath(lockFile, lockIdentity, epoch);
     try {
-      const file = path.join(root, entry.name);
       const record = await readReclaimerGuard(file);
-      if (!record?.valid || !Number.isFinite(record.lock.epoch)) continue;
-      if (record.lock.lockDev !== lockIdentity.dev || record.lock.lockIno !== lockIdentity.ino) continue;
-      const expected = reclaimerGuardPath(lockFile, lockIdentity, record.lock.epoch);
-      if (file !== expected) continue;
-      if (record.lock.leaseExpiresAt > clockNow()) {
-        active.push({ file, record });
-        continue;
-      }
-      if (record.lock.epoch <= currentEpoch - ACTIVE_GUARD_EPOCH_WINDOW - 1) await rm(file);
+      if (isExactActiveGuard(record, lockIdentity, epoch)) active.push({ file, record });
     } catch (error) {
-      if (!isMissing(error)) continue;
+      if (!isMissing(error)) throw error;
     }
   }
   return active;
 };
 
+const cleanupHistoricalReclaimerGuards = async () => {
+  const entries = await readdir(root, { withFileTypes: true });
+  const currentEpoch = reclaimerEpoch();
+  let inspected = 0;
+  for (const entry of entries) {
+    if (!entry.isFile() || entry.isSymbolicLink()) continue;
+    const parts = guardNameParts(entry.name);
+    if (!parts || parts.epoch > currentEpoch - ACTIVE_GUARD_EPOCH_WINDOW - 1) continue;
+    if (inspected >= MAX_RECLAIMER_GUARD_CLEANUP) break;
+    inspected += 1;
+    try {
+      const file = path.join(root, entry.name);
+      const record = await readReclaimerGuard(file);
+      if (!record?.valid || record.lock.leaseExpiresAt > clockNow()) continue;
+      if (record.lock.lockDev !== parts.lockDev || record.lock.lockIno !== parts.lockIno) continue;
+      if (record.lock.epoch !== parts.epoch) continue;
+      await rm(file);
+    } catch (error) {
+      if (!isMissing(error)) continue;
+    }
+  }
+};
+
 const acquireReclaimerGuard = async (lockFile, lockIdentity) => {
+  await cleanupHistoricalReclaimerGuards();
   if ((await activeReclaimerGuards(lockFile, lockIdentity)).length > 0) return undefined;
   const epoch = reclaimerEpoch();
   const file = reclaimerGuardPath(lockFile, lockIdentity, epoch);
