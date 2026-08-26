@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -9,6 +9,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -72,6 +73,46 @@ const assertBoundedStderr = (result) => {
   assert.equal(result.stdout, "");
   assert.ok(Buffer.byteLength(result.stderr, "utf8") <= 512, result.stderr);
   assert.ok(result.stderr.split("\n").filter(Boolean).length <= 1, result.stderr);
+};
+const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+const barrierPath = (dir, point, suffix) => path.join(dir, `${point}.${suffix}`);
+const startDriftHook = (stateDir, input, extraEnv = {}, extraArgs = []) => {
+  const child = spawn(process.execPath, [...extraArgs, hookScript], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      AI_SAFE_DRIVER_TEST_MODE: "1",
+      AI_SAFE_DRIVER_STATE_DIR: stateDir,
+      ...extraEnv,
+    },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  child.stdin.end(JSON.stringify(input));
+  const result = new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (status) => resolve({ status, stdout, stderr }));
+  });
+  return { child, result };
+};
+const waitForBarrier = async ({ child, result }, dir, point) => {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (existsSync(barrierPath(dir, point, "ready"))) return;
+    if (child.exitCode !== null) break;
+    await wait(20);
+  }
+  if (child.exitCode === null) child.kill("SIGKILL");
+  await result;
+  throw new Error(`hook did not reach test barrier: ${point}`);
+};
+const releaseBarrier = (dir, point) => writeFileSync(barrierPath(dir, point, "continue"), "release");
+const writeStateAtomicallyForTest = (file, state) => {
+  const temporary = `${file}.test-replacement`;
+  writeFileSync(temporary, JSON.stringify(state), { mode: 0o600 });
+  renameSync(temporary, file);
 };
 const plainState = (overrides = {}) => ({
   schema: "ai-safe-driver-session-state-v1",
@@ -368,4 +409,138 @@ test("the state directory override is ignored without explicit test mode", () =>
   assert.equal(existsSync(stateFile(overrideRoot, sessionId)), false);
   assert.equal(existsSync(defaultFile), true);
   rmSync(defaultFile, { force: true });
+});
+
+test("unrecognized state keys are rejected and raw text never survives a state update", () => {
+  const root = makeStateDir("canonical-state");
+  const sessionId = "session-canonical-state";
+  const secretPrompt = "private user requirement must never be persisted";
+  const secretAssistant = "private assistant response must never be persisted";
+  writeFileSync(stateFile(root, sessionId), JSON.stringify(plainState({
+    prompt: secretPrompt,
+    last_assistant_message: secretAssistant,
+  })), { mode: 0o600 });
+
+  assertNoOutput(runDriftHook(root, {
+    hook_event_name: "UserPromptSubmit", session_id: sessionId, prompt: "안 했잖아.",
+  }));
+  const serialized = readFileSync(stateFile(root, sessionId), "utf8");
+  assert.equal(serialized.includes(secretPrompt), false);
+  assert.equal(serialized.includes(secretAssistant), false);
+  assert.deepEqual(Object.keys(JSON.parse(serialized)).sort(), [
+    "assistantAcknowledged",
+    "cooldownRemaining",
+    "correctionCount",
+    "expiresAt",
+    "lastSignalAt",
+    "protestCount",
+    "recurrenceCount",
+    "recoveryInjected",
+    "repairPromised",
+    "schema",
+  ]);
+});
+
+test("pruning an expired record never removes a fresh atomic replacement", async () => {
+  const root = makeStateDir("prune-race");
+  const barrier = makeStateDir("prune-barrier");
+  const sessionId = "session-prune-race";
+  const file = stateFile(root, sessionId);
+  writeFileSync(file, JSON.stringify(plainState({ expiresAt: Date.now() - 1 })), { mode: 0o600 });
+  const fresh = plainState({ correctionCount: 7, expiresAt: Date.now() + 60_000 });
+  const hook = startDriftHook(root, {
+    hook_event_name: "UserPromptSubmit", session_id: "unrelated-neutral", prompt: "Continue with the plan.",
+  }, {
+    AI_SAFE_DRIVER_TEST_BARRIER_DIR: barrier,
+    AI_SAFE_DRIVER_TEST_BARRIER: "after-expired-state-read",
+  });
+
+  await waitForBarrier(hook, barrier, "after-expired-state-read");
+  writeStateAtomicallyForTest(file, fresh);
+  releaseBarrier(barrier, "after-expired-state-read");
+  assertNoOutput(await hook.result);
+  assert.deepEqual(readState(root, sessionId), fresh);
+});
+
+test("an active old lease lock is not stolen merely because its mtime is old", () => {
+  const root = makeStateDir("active-old-lock");
+  const sessionId = "session-active-old-lock";
+  const lock = lockFile(root, sessionId);
+  const liveLease = {
+    owner: "another-live-hook",
+    leaseExpiresAt: Date.now() + 60_000,
+  };
+  writeFileSync(lock, JSON.stringify(liveLease), { mode: 0o600 });
+  utimesSync(lock, new Date(0), new Date(0));
+
+  assertNoOutput(runDriftHook(root, {
+    hook_event_name: "UserPromptSubmit", session_id: sessionId, prompt: "안 했잖아.",
+  }));
+  assert.equal(existsSync(stateFile(root, sessionId)), false);
+  assert.deepEqual(JSON.parse(readFileSync(lock, "utf8")), liveLease);
+});
+
+test("lock release leaves a successor lock created after the owner releases", async () => {
+  const root = makeStateDir("lock-release-race");
+  const barrier = makeStateDir("lock-release-barrier");
+  const sessionId = "session-lock-release-race";
+  const lock = lockFile(root, sessionId);
+  const successor = { owner: "successor-hook", leaseExpiresAt: Date.now() + 60_000 };
+  const hook = startDriftHook(root, {
+    hook_event_name: "UserPromptSubmit", session_id: sessionId, prompt: "안 했잖아.",
+  }, {
+    AI_SAFE_DRIVER_TEST_BARRIER_DIR: barrier,
+    AI_SAFE_DRIVER_TEST_BARRIER: "before-lock-release",
+  });
+
+  await waitForBarrier(hook, barrier, "before-lock-release");
+  rmSync(lock);
+  writeFileSync(lock, JSON.stringify(successor), { mode: 0o600 });
+  releaseBarrier(barrier, "before-lock-release");
+  assertNoOutput(await hook.result);
+  assert.deepEqual(JSON.parse(readFileSync(lock, "utf8")), successor);
+});
+
+test("a state file swapped to a symlink after validation is never read through", async () => {
+  const root = makeStateDir("state-read-race");
+  const barrier = makeStateDir("state-read-barrier");
+  const sessionId = "session-state-read-race";
+  const file = stateFile(root, sessionId);
+  const victim = path.join(root, "state-read-victim.json");
+  const audit = path.join(barrier, "read-followed");
+  const preload = path.join(barrier, "read-audit.cjs");
+  const victimState = plainState({ correctionCount: 99 });
+  const victimSerialized = JSON.stringify(victimState);
+  writeFileSync(file, JSON.stringify(plainState()), { mode: 0o600 });
+  writeFileSync(victim, victimSerialized, { mode: 0o600 });
+  writeFileSync(preload, [
+    "const fs = require('node:fs');",
+    "const promises = require('node:fs/promises');",
+    "const { syncBuiltinESMExports } = require('node:module');",
+    "const originalReadFile = promises.readFile;",
+    "promises.readFile = async (file, ...args) => {",
+    "  if (file === process.env.AI_SAFE_DRIVER_TEST_AUDIT_STATE_PATH && fs.lstatSync(file).isSymbolicLink()) {",
+    "    fs.writeFileSync(process.env.AI_SAFE_DRIVER_TEST_AUDIT_PATH, 'followed');",
+    "  }",
+    "  return originalReadFile(file, ...args);",
+    "};",
+    "syncBuiltinESMExports();",
+  ].join("\n"));
+  const hook = startDriftHook(root, {
+    hook_event_name: "UserPromptSubmit", session_id: sessionId, prompt: "Continue with the plan.",
+  }, {
+    AI_SAFE_DRIVER_TEST_BARRIER_DIR: barrier,
+    AI_SAFE_DRIVER_TEST_BARRIER: "before-state-open",
+    AI_SAFE_DRIVER_TEST_AUDIT_STATE_PATH: file,
+    AI_SAFE_DRIVER_TEST_AUDIT_PATH: audit,
+  }, ["--require", preload]);
+
+  await waitForBarrier(hook, barrier, "before-state-open");
+  rmSync(file);
+  symlinkSync(victim, file);
+  releaseBarrier(barrier, "before-state-open");
+  assertNoOutput(await hook.result);
+  assert.equal(existsSync(audit), false);
+  assert.equal(lstatSync(file).isSymbolicLink(), true);
+  assert.equal(readFileSync(victim, "utf8"), victimSerialized);
 });
