@@ -18,6 +18,12 @@ const MAX_CONTEXT_BYTES = 4096;
 const LOCK_LEASE_MS = 30 * 1000;
 const RECLAIM_GUARD_LEASE_MS = LOCK_LEASE_MS;
 const TEST_MODE = process.env.AI_SAFE_DRIVER_TEST_MODE === "1";
+const testNow = Number(process.env.AI_SAFE_DRIVER_TEST_NOW_MS);
+const testEpochMs = Number(process.env.AI_SAFE_DRIVER_TEST_RECLAIM_EPOCH_MS);
+const clockNow = () => TEST_MODE && Number.isFinite(testNow) ? testNow : Date.now();
+const reclaimerEpochMs = TEST_MODE && Number.isFinite(testEpochMs) && testEpochMs > 0
+  ? testEpochMs
+  : RECLAIM_GUARD_LEASE_MS;
 const configuredTestRoot = TEST_MODE
   ? process.env.AI_SAFE_DRIVER_STATE_DIR
   : undefined;
@@ -240,7 +246,7 @@ const pruneExpired = async () => {
 const writeLock = async (file, owner) => {
   const handle = await open(file, "wx", 0o600);
   try {
-    await handle.writeFile(JSON.stringify({ owner, leaseExpiresAt: Date.now() + LOCK_LEASE_MS }), "utf8");
+    await handle.writeFile(JSON.stringify({ owner, leaseExpiresAt: clockNow() + LOCK_LEASE_MS }), "utf8");
     await handle.sync();
   } finally {
     await handle.close();
@@ -248,7 +254,10 @@ const writeLock = async (file, owner) => {
   return { file, owner };
 };
 
-const reclaimerGuardPath = (file) => `${file}.reclaim`;
+const reclaimerEpoch = () => Math.floor(clockNow() / reclaimerEpochMs);
+const reclaimerGuardPath = (file, identity, epoch) => (
+  `${file}.reclaim.${identity.dev}-${identity.ino}.${epoch}`
+);
 
 const readReclaimerGuard = async (file) => {
   const record = await readLock(file);
@@ -256,14 +265,15 @@ const readReclaimerGuard = async (file) => {
   return record;
 };
 
-const writeReclaimerGuard = async (file, owner, lockIdentity) => {
+const writeReclaimerGuard = async (file, owner, lockIdentity, epoch) => {
   const handle = await open(file, "wx", 0o600);
   try {
     await handle.writeFile(JSON.stringify({
       owner,
-      leaseExpiresAt: Date.now() + RECLAIM_GUARD_LEASE_MS,
+      leaseExpiresAt: clockNow() + RECLAIM_GUARD_LEASE_MS,
       lockDev: lockIdentity.dev,
       lockIno: lockIdentity.ino,
+      epoch,
     }), "utf8");
     await handle.sync();
   } finally {
@@ -272,54 +282,72 @@ const writeReclaimerGuard = async (file, owner, lockIdentity) => {
   return { file, owner };
 };
 
-const reclaimExpiredGuard = async (file, record) => {
-  if (!record) return false;
-  if (record.valid && record.lock.leaseExpiresAt > Date.now()) return false;
-  if (!record.valid && Date.now() - (await assertRegularFile(file)).mtimeMs <= RECLAIM_GUARD_LEASE_MS) return false;
-  const current = await readReclaimerGuard(file);
-  if (!current || current.identity.dev !== record.identity.dev || current.identity.ino !== record.identity.ino) return false;
-  if (current.valid && current.lock.leaseExpiresAt > Date.now()) return false;
-  await rm(file);
-  return true;
+const isActiveRelevantGuard = (record, lockIdentity) => record?.valid
+  && record.lock.lockDev === lockIdentity.dev
+  && record.lock.lockIno === lockIdentity.ino
+  && Number.isFinite(record.lock.epoch)
+  && record.lock.leaseExpiresAt > clockNow();
+
+const activeReclaimerGuards = async (lockFile, lockIdentity) => {
+  const prefix = `${path.basename(lockFile)}.reclaim.`;
+  const entries = await readdir(root, { withFileTypes: true });
+  const active = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || entry.isSymbolicLink() || !entry.name.startsWith(prefix)) continue;
+    try {
+      const file = path.join(root, entry.name);
+      const record = await readReclaimerGuard(file);
+      if (isActiveRelevantGuard(record, lockIdentity)) active.push({ file, record });
+    } catch (error) {
+      if (!isMissing(error)) continue;
+    }
+  }
+  return active;
 };
 
 const acquireReclaimerGuard = async (lockFile, lockIdentity) => {
-  const file = reclaimerGuardPath(lockFile);
+  if ((await activeReclaimerGuards(lockFile, lockIdentity)).length > 0) return undefined;
+  const epoch = reclaimerEpoch();
+  const file = reclaimerGuardPath(lockFile, lockIdentity, epoch);
   const owner = randomUUID();
   try {
-    return await writeReclaimerGuard(file, owner, lockIdentity);
+    await writeReclaimerGuard(file, owner, lockIdentity, epoch);
   } catch (error) {
     if (!error || error.code !== "EEXIST") throw error;
+    return undefined;
   }
-  const existing = await readReclaimerGuard(file);
-  if (!existing || !(await reclaimExpiredGuard(file, existing))) return undefined;
-  try {
-    return await writeReclaimerGuard(file, owner, lockIdentity);
-  } catch (error) {
-    if (error && error.code === "EEXIST") return undefined;
-    throw error;
+  const active = await activeReclaimerGuards(lockFile, lockIdentity);
+  const adjacentWinner = active.some(({ file: candidate, record }) => (
+    candidate !== file && record.lock.epoch <= epoch
+  ));
+  if (adjacentWinner) {
+    await releaseReclaimerGuard({ file, owner });
+    return undefined;
   }
+  return { file, owner, lockIdentity, epoch };
 };
 
-const releaseReclaimerGuard = async ({ file, owner }) => {
+const releaseReclaimerGuard = async ({ file, owner, lockIdentity, epoch }) => {
   const current = await readReclaimerGuard(file);
   if (!current || !current.valid || current.lock.owner !== owner) return;
+  if (lockIdentity && (current.lock.lockDev !== lockIdentity.dev || current.lock.lockIno !== lockIdentity.ino)) return;
+  if (epoch !== undefined && current.lock.epoch !== epoch) return;
   await rm(file);
 };
 
 const discardExpiredLock = async (file, record) => {
   if (!record) return false;
-  if (record.valid && record.lock.leaseExpiresAt > Date.now()) return false;
-  if (!record.valid && Date.now() - (await assertRegularFile(file)).mtimeMs <= LOCK_LEASE_MS) return false;
+  if (record.valid && record.lock.leaseExpiresAt > clockNow()) return false;
+  if (!record.valid && clockNow() - (await assertRegularFile(file)).mtimeMs <= LOCK_LEASE_MS) return false;
   const current = await readLock(file);
   if (!current || current.identity.dev !== record.identity.dev || current.identity.ino !== record.identity.ino) return false;
   if (record.valid !== current.valid) return false;
   if (record.valid && (
     current.lock.owner !== record.lock.owner
     || current.lock.leaseExpiresAt !== record.lock.leaseExpiresAt
-    || current.lock.leaseExpiresAt > Date.now()
+    || current.lock.leaseExpiresAt > clockNow()
   )) return false;
-  const guardFile = reclaimerGuardPath(file);
+  const guardFile = reclaimerGuardPath(file, current.identity, reclaimerEpoch());
   await testBarrier("after-stale-lock-reread", guardFile);
   const guard = await acquireReclaimerGuard(file, current.identity);
   if (!guard) return false;
@@ -331,7 +359,7 @@ const discardExpiredLock = async (file, record) => {
   if (current.valid !== confirmed.valid || (current.valid && (
     confirmed.lock.owner !== current.lock.owner
     || confirmed.lock.leaseExpiresAt !== current.lock.leaseExpiresAt
-    || confirmed.lock.leaseExpiresAt > Date.now()
+    || confirmed.lock.leaseExpiresAt > clockNow()
   ))) {
     await releaseReclaimerGuard(guard);
     return false;
@@ -350,8 +378,8 @@ const acquireLock = async (file) => {
 
   const existing = await readLock(file);
   if (!existing) return undefined;
-  if (existing.valid && existing.lock.leaseExpiresAt > Date.now()) return undefined;
-  if (!existing.valid && Date.now() - (await assertRegularFile(file)).mtimeMs <= LOCK_LEASE_MS) return undefined;
+  if (existing.valid && existing.lock.leaseExpiresAt > clockNow()) return undefined;
+  if (!existing.valid && clockNow() - (await assertRegularFile(file)).mtimeMs <= LOCK_LEASE_MS) return undefined;
   const reclaimerGuard = await discardExpiredLock(file, existing);
   if (!reclaimerGuard) return undefined;
   const retryCreateLock = async () => {
