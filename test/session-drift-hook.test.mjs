@@ -65,6 +65,7 @@ const lockFile = (root, sessionId) => `${stateFile(root, sessionId)}.lock`;
 const reclaimerGuardFile = (root, sessionId, identity, epoch) => (
   `${lockFile(root, sessionId)}.reclaim.${identity.dev}-${identity.ino}.${epoch}`
 );
+const reclaimerGuardDirectory = (root) => path.join(root, ".reclaimer-guards");
 const readState = (root, sessionId) => JSON.parse(readFileSync(stateFile(root, sessionId), "utf8"));
 const mode = (file) => statSync(file).mode & 0o777;
 const assertSucceeded = (result) => assert.equal(result.status, 0, result.stderr);
@@ -817,6 +818,107 @@ test("cleanup progresses through malformed historical guards without touching ac
   assert.equal(existsSync(stateFile(root, sessionId)), false);
   assert.deepEqual(JSON.parse(readFileSync(activeCurrentGuard, "utf8")), currentRecord);
   assert.deepEqual(JSON.parse(readFileSync(activeAdjacentGuard, "utf8")), adjacentRecord);
+});
+
+test("a delayed epoch-selected reclaimer aborts without overlapping the current reclaimer", async () => {
+  const root = makeStateDir("delayed-reclaimer-epoch");
+  const firstBarrier = makeStateDir("delayed-reclaimer-first");
+  const secondBarrier = makeStateDir("delayed-reclaimer-second");
+  const sessionId = "session-delayed-reclaimer-epoch";
+  const epochMs = 20;
+  const staleLock = lockFile(root, sessionId);
+  writeFileSync(staleLock, JSON.stringify({ owner: "expired-hook", leaseExpiresAt: Date.now() - 1 }), { mode: 0o600 });
+  const input = { hook_event_name: "UserPromptSubmit", session_id: sessionId, prompt: "안 했잖아." };
+  const first = startDriftHook(root, input, {
+    AI_SAFE_DRIVER_TEST_RECLAIM_EPOCH_MS: String(epochMs),
+    AI_SAFE_DRIVER_TEST_BARRIER_DIR: firstBarrier,
+    AI_SAFE_DRIVER_TEST_BARRIER: "after-reclaimer-epoch-selection",
+  });
+
+  await waitForBarrier(first, firstBarrier, "after-reclaimer-epoch-selection");
+  await wait(epochMs * 5);
+  const second = startDriftHook(root, input, {
+    AI_SAFE_DRIVER_TEST_RECLAIM_EPOCH_MS: String(epochMs),
+    AI_SAFE_DRIVER_TEST_BARRIER_DIR: secondBarrier,
+    AI_SAFE_DRIVER_TEST_BARRIER: "before-lock-release",
+  });
+  await waitForBarrier(second, secondBarrier, "before-lock-release");
+  releaseBarrier(firstBarrier, "after-reclaimer-epoch-selection");
+
+  assertNoOutput(await first.result);
+  assert.equal(readState(root, sessionId).correctionCount, 1);
+  assert.equal(lstatSync(lockFile(root, sessionId)).isFile(), true);
+  assert.equal(readdirSync(reclaimerGuardDirectory(root)).length, 1);
+  releaseBarrier(secondBarrier, "before-lock-release");
+  assertNoOutput(await second.result);
+  assert.equal(readState(root, sessionId).correctionCount, 1);
+  assert.deepEqual(readdirSync(reclaimerGuardDirectory(root)), []);
+});
+
+test("historical guard cleanup streams a private directory without materializing the state root", async () => {
+  const root = makeStateDir("guard-directory-streaming");
+  const barrier = makeStateDir("guard-directory-audit");
+  const guardDirectory = reclaimerGuardDirectory(root);
+  const sessionId = "session-guard-directory-streaming";
+  const now = 7_000_000;
+  const epochMs = 1_000;
+  const epoch = now / epochMs;
+  const extraEnv = {
+    AI_SAFE_DRIVER_TEST_NOW_MS: String(now),
+    AI_SAFE_DRIVER_TEST_RECLAIM_EPOCH_MS: String(epochMs),
+  };
+  const staleLock = lockFile(root, sessionId);
+  writeFileSync(staleLock, JSON.stringify({ owner: "expired-hook", leaseExpiresAt: now - 1 }), { mode: 0o600 });
+  const identity = lstatSync(staleLock);
+  for (let index = 0; index < 1_024; index += 1) {
+    writeFileSync(path.join(root, `ordinary-root-entry-${String(index).padStart(4, "0")}.tmp`), "ordinary", { mode: 0o600 });
+  }
+  mkdirSync(guardDirectory, { mode: 0o700 });
+  const historicalGuards = Array.from({ length: 150 }, (_, index) => {
+    const file = path.join(guardDirectory, path.basename(reclaimerGuardFile(root, sessionId, identity, epoch - index - 3)));
+    writeFileSync(file, index % 2 === 0 ? "{partial" : JSON.stringify({ owner: `partial-${index}` }), { mode: 0o600 });
+    return file;
+  });
+  const activeGuard = path.join(guardDirectory, path.basename(reclaimerGuardFile(root, sessionId, identity, epoch)));
+  const activeRecord = {
+    owner: "foreign-current-epoch",
+    leaseExpiresAt: now + epochMs,
+    lockDev: identity.dev,
+    lockIno: identity.ino,
+    epoch,
+  };
+  writeFileSync(activeGuard, JSON.stringify(activeRecord), { mode: 0o600 });
+  const audit = path.join(barrier, "cleanup-read-root");
+  const preload = path.join(barrier, "cleanup-read-audit.cjs");
+  writeFileSync(preload, [
+    "const fs = require('node:fs');",
+    "const promises = require('node:fs/promises');",
+    "const { syncBuiltinESMExports } = require('node:module');",
+    "const originalReaddir = promises.readdir;",
+    "promises.readdir = async (file, ...args) => {",
+    "  if (file === process.env.AI_SAFE_DRIVER_TEST_AUDIT_ROOT && new Error().stack.includes('cleanupHistoricalReclaimerGuards')) {",
+    "    fs.writeFileSync(process.env.AI_SAFE_DRIVER_TEST_AUDIT_PATH, 'root materialized');",
+    "  }",
+    "  return originalReaddir(file, ...args);",
+    "};",
+    "syncBuiltinESMExports();",
+  ].join("\n"));
+  const input = { hook_event_name: "UserPromptSubmit", session_id: sessionId, prompt: "안 했잖아." };
+  const auditEnv = {
+    ...extraEnv,
+    AI_SAFE_DRIVER_TEST_AUDIT_ROOT: root,
+    AI_SAFE_DRIVER_TEST_AUDIT_PATH: audit,
+  };
+
+  assertNoOutput(await startDriftHook(root, input, auditEnv, ["--require", preload]).result);
+  const remainingAfterFirstRun = historicalGuards.filter((file) => existsSync(file));
+  assert.ok(remainingAfterFirstRun.length < historicalGuards.length);
+  assertNoOutput(await startDriftHook(root, input, auditEnv, ["--require", preload]).result);
+  assertNoOutput(await startDriftHook(root, input, auditEnv, ["--require", preload]).result);
+  for (const historicalGuard of historicalGuards) assert.equal(existsSync(historicalGuard), false);
+  assert.equal(existsSync(audit), false);
+  assert.equal(existsSync(stateFile(root, sessionId)), false);
+  assert.deepEqual(JSON.parse(readFileSync(activeGuard, "utf8")), activeRecord);
 });
 
 test("a malformed state for one session cannot suppress another session's recovery cycle", () => {
