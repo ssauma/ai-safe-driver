@@ -763,6 +763,62 @@ test("an active adjacent guard is found behind more than 128 historical or malfo
   assert.deepEqual(JSON.parse(readFileSync(activeGuard, "utf8")), activeRecord);
 });
 
+test("cleanup progresses through malformed historical guards without touching active foreign guards", () => {
+  const root = makeStateDir("malformed-guard-cleanup");
+  const sessionId = "session-malformed-guard-cleanup";
+  const now = 6_000_000;
+  const epochMs = 1_000;
+  const epoch = now / epochMs;
+  const extraEnv = {
+    AI_SAFE_DRIVER_TEST_NOW_MS: String(now),
+    AI_SAFE_DRIVER_TEST_RECLAIM_EPOCH_MS: String(epochMs),
+  };
+  const staleLock = lockFile(root, sessionId);
+  writeFileSync(staleLock, JSON.stringify({ owner: "expired-hook", leaseExpiresAt: now - 1 }), { mode: 0o600 });
+  const identity = lstatSync(staleLock);
+  const historicalGuards = Array.from({ length: 150 }, (_, index) => {
+    const guardEpoch = epoch - index - 3;
+    const file = reclaimerGuardFile(root, sessionId, identity, guardEpoch);
+    const kind = index % 3;
+    const content = kind === 0
+      ? "{partial"
+      : kind === 1
+        ? JSON.stringify({ owner: `partial-${index}` })
+        : JSON.stringify({
+          owner: `inconsistent-${index}`,
+          leaseExpiresAt: now - 1,
+          lockDev: identity.dev + 1,
+          lockIno: identity.ino + 1,
+          epoch: guardEpoch - 1,
+        });
+    writeFileSync(file, content, { mode: 0o600 });
+    return file;
+  });
+  const activeCurrentGuard = reclaimerGuardFile(root, sessionId, identity, epoch);
+  const activeAdjacentGuard = reclaimerGuardFile(root, sessionId, identity, epoch - 1);
+  const currentRecord = {
+    owner: "foreign-current-epoch",
+    leaseExpiresAt: now + epochMs,
+    lockDev: identity.dev,
+    lockIno: identity.ino,
+    epoch,
+  };
+  const adjacentRecord = { ...currentRecord, owner: "foreign-adjacent-epoch", epoch: epoch - 1 };
+  writeFileSync(activeCurrentGuard, JSON.stringify(currentRecord), { mode: 0o600 });
+  writeFileSync(activeAdjacentGuard, JSON.stringify(adjacentRecord), { mode: 0o600 });
+  const input = { hook_event_name: "UserPromptSubmit", session_id: sessionId, prompt: "안 했잖아." };
+
+  assertNoOutput(runDriftHook(root, input, extraEnv));
+  const remainingAfterFirstRun = historicalGuards.filter((file) => existsSync(file));
+  assert.ok(remainingAfterFirstRun.length < historicalGuards.length);
+  assertNoOutput(runDriftHook(root, input, extraEnv));
+  assertNoOutput(runDriftHook(root, input, extraEnv));
+  for (const historicalGuard of historicalGuards) assert.equal(existsSync(historicalGuard), false);
+  assert.equal(existsSync(stateFile(root, sessionId)), false);
+  assert.deepEqual(JSON.parse(readFileSync(activeCurrentGuard, "utf8")), currentRecord);
+  assert.deepEqual(JSON.parse(readFileSync(activeAdjacentGuard, "utf8")), adjacentRecord);
+});
+
 test("a malformed state for one session cannot suppress another session's recovery cycle", () => {
   const root = makeStateDir("corrupt-session-isolation");
   const corruptSession = "session-corrupt";
