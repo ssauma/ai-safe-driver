@@ -31,6 +31,12 @@ Use this skill when one failure class repeats or the user explicitly reports rep
 
 Do not treat an isolated first failure, an ordinary technical “why” question, or user frustration alone as drift.
 
+## Hook-triggered recovery
+
+A local hook may add bounded recovery context after an observable repeated-correction sequence or an explicit health or repeated-tool diagnosis request. Treat the hook category as a reason to inspect evidence, not as proof of drift and not as a final dashboard percentage.
+
+Reconstruct the mismatch from the visible conversation. If the evidence does not show repetition, say so and continue without escalating. Anger, profanity, capitalization, or punctuation alone never raises the drift label. Hook state is not permission to retry a tool, write a file, create or arm a handover, compact, or clear.
+
 ## Recovery contract
 
 1. **Stop.** Do not repeat the same action unchanged after the same failure has occurred twice.

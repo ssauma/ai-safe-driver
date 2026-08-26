@@ -2,13 +2,15 @@
 
 English | [Korean](README.ko.md)
 
-AI Safe Driver steps in when an agent gets stuck making the same mistake. It stops the loop, works out what the evidence actually supports, and gets the task back on track. It suggests a new session only when the current conversation is too tangled to recover reliably.
+AI Safe Driver is a recovery skill for conversations that have started repeating the same mistake. You can call it directly. Local deterministic hooks may also wake it when they observe a correction, an acknowledgment or repair promise, and the same complaint returning. The hooks provide a reason to inspect the visible conversation, not a final diagnosis.
+
+These rules may miss unfamiliar wording, so direct invocation remains available. Anger alone is not drift. A tool failure needs an explicit diagnosis request before the hook treats it as a diagnostic signal. Temporary state stores only short-lived categories, counts, and timestamps; it never stores conversation text. Automatic phrase coverage includes Korean, English, Simplified and Traditional Chinese, and Japanese.
 
 The dashboard is deliberately a little ridiculous. When you ask for a health check, it may report `Drifting safely. 0%` or `Drifting safely. 100%`. It stays out of ordinary replies. The number is a rule-based label, not a reading of model weights, attention, or some hidden internal drift meter.
 
 At 75% or 100%, it asks `Would you like me to countersteer?` That means stopping the approach that keeps failing and suggesting one limited way to recover. A yes only starts that discussion. It does not give the plugin permission to write files, retry tools, compact the conversation, or clear the session. Those actions still need separate approval.
 
-Claude Code and Codex use the same skill. The plugin also includes a handover hook that normally does nothing. It runs only after you approve and prepare a one-time handover. There is no executable installer, MCP server, network code, or automatic update check.
+Claude Code and Codex use the same skill. The plugin also includes local recovery hooks and a handover hook. Recovery hooks never retry tools, write project files, create or arm a handover, compact, or clear. The handover hook normally does nothing and runs only after you approve and prepare a one-time handover. There is no executable installer, MCP server, network code, or automatic update check.
 
 ## Install
 
@@ -29,6 +31,12 @@ codex plugin add ai-safe-driver@ai-safe-driver
 ```
 
 Start a new Codex session and run `$ai-safe-driver`. You can also describe the repeated failure in your own words.
+
+## Automatic recovery hooks
+
+The recovery hooks look for a narrow, observable sequence: a correction, an assistant acknowledgment or repair promise, and a recurring complaint. They may also respond to an explicit conversation-health check or an explicit request to diagnose repeated tool failures. A raw tool error is not enough. Capitalization, profanity, punctuation, repeated characters, and frustration do not raise the label by themselves.
+
+When a hook wakes the skill, its category is only a lead. The skill must reconstruct the mismatch from the visible conversation and continue normally if repetition is not supported. The hook does not calculate a final drift percentage or grant permission for any state-changing action.
 
 ## What you can say
 
