@@ -16,6 +16,7 @@ import {
 const MAX_INPUT_BYTES = 256 * 1024;
 const MAX_CONTEXT_BYTES = 4096;
 const LOCK_LEASE_MS = 30 * 1000;
+const RECLAIM_GUARD_LEASE_MS = LOCK_LEASE_MS;
 const TEST_MODE = process.env.AI_SAFE_DRIVER_TEST_MODE === "1";
 const configuredTestRoot = TEST_MODE
   ? process.env.AI_SAFE_DRIVER_STATE_DIR
@@ -102,9 +103,12 @@ const hasIdentity = (info, identity) => info.isFile()
   && info.dev === identity.dev
   && info.ino === identity.ino;
 
-const testBarrier = async (point) => {
+const testBarrier = async (point, automaticReleasePath) => {
   const directory = TEST_MODE && process.env.AI_SAFE_DRIVER_TEST_BARRIER_DIR;
-  if (!directory || process.env.AI_SAFE_DRIVER_TEST_BARRIER !== point) return;
+  const configured = [process.env.AI_SAFE_DRIVER_TEST_BARRIER, process.env.AI_SAFE_DRIVER_TEST_BARRIERS]
+    .filter(Boolean)
+    .flatMap((value) => value.split(","));
+  if (!directory || !configured.includes(point)) return;
   const ready = path.join(directory, `${point}.ready`);
   const proceed = path.join(directory, `${point}.continue`);
   const handle = await open(ready, "wx", 0o600);
@@ -116,6 +120,14 @@ const testBarrier = async (point) => {
       return;
     } catch (error) {
       if (!isMissing(error)) throw error;
+    }
+    if (automaticReleasePath) {
+      try {
+        await lstat(automaticReleasePath);
+        return;
+      } catch (error) {
+        if (!isMissing(error)) throw error;
+      }
     }
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
@@ -236,11 +248,69 @@ const writeLock = async (file, owner) => {
   return { file, owner };
 };
 
+const reclaimerGuardPath = (file) => `${file}.reclaim`;
+
+const readReclaimerGuard = async (file) => {
+  const record = await readLock(file);
+  if (!record || !record.valid) return record;
+  return record;
+};
+
+const writeReclaimerGuard = async (file, owner, lockIdentity) => {
+  const handle = await open(file, "wx", 0o600);
+  try {
+    await handle.writeFile(JSON.stringify({
+      owner,
+      leaseExpiresAt: Date.now() + RECLAIM_GUARD_LEASE_MS,
+      lockDev: lockIdentity.dev,
+      lockIno: lockIdentity.ino,
+    }), "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  return { file, owner };
+};
+
+const reclaimExpiredGuard = async (file, record) => {
+  if (!record) return false;
+  if (record.valid && record.lock.leaseExpiresAt > Date.now()) return false;
+  if (!record.valid && Date.now() - (await assertRegularFile(file)).mtimeMs <= RECLAIM_GUARD_LEASE_MS) return false;
+  const current = await readReclaimerGuard(file);
+  if (!current || current.identity.dev !== record.identity.dev || current.identity.ino !== record.identity.ino) return false;
+  if (current.valid && current.lock.leaseExpiresAt > Date.now()) return false;
+  await rm(file);
+  return true;
+};
+
+const acquireReclaimerGuard = async (lockFile, lockIdentity) => {
+  const file = reclaimerGuardPath(lockFile);
+  const owner = randomUUID();
+  try {
+    return await writeReclaimerGuard(file, owner, lockIdentity);
+  } catch (error) {
+    if (!error || error.code !== "EEXIST") throw error;
+  }
+  const existing = await readReclaimerGuard(file);
+  if (!existing || !(await reclaimExpiredGuard(file, existing))) return undefined;
+  try {
+    return await writeReclaimerGuard(file, owner, lockIdentity);
+  } catch (error) {
+    if (error && error.code === "EEXIST") return undefined;
+    throw error;
+  }
+};
+
+const releaseReclaimerGuard = async ({ file, owner }) => {
+  const current = await readReclaimerGuard(file);
+  if (!current || !current.valid || current.lock.owner !== owner) return;
+  await rm(file);
+};
+
 const discardExpiredLock = async (file, record) => {
   if (!record) return false;
   if (record.valid && record.lock.leaseExpiresAt > Date.now()) return false;
   if (!record.valid && Date.now() - (await assertRegularFile(file)).mtimeMs <= LOCK_LEASE_MS) return false;
-  await testBarrier("before-stale-lock-unlink");
   const current = await readLock(file);
   if (!current || current.identity.dev !== record.identity.dev || current.identity.ino !== record.identity.ino) return false;
   if (record.valid !== current.valid) return false;
@@ -249,8 +319,25 @@ const discardExpiredLock = async (file, record) => {
     || current.lock.leaseExpiresAt !== record.lock.leaseExpiresAt
     || current.lock.leaseExpiresAt > Date.now()
   )) return false;
+  const guardFile = reclaimerGuardPath(file);
+  await testBarrier("after-stale-lock-reread", guardFile);
+  const guard = await acquireReclaimerGuard(file, current.identity);
+  if (!guard) return false;
+  const confirmed = await readLock(file);
+  if (!confirmed || confirmed.identity.dev !== current.identity.dev || confirmed.identity.ino !== current.identity.ino) {
+    await releaseReclaimerGuard(guard);
+    return false;
+  }
+  if (current.valid !== confirmed.valid || (current.valid && (
+    confirmed.lock.owner !== current.lock.owner
+    || confirmed.lock.leaseExpiresAt !== current.lock.leaseExpiresAt
+    || confirmed.lock.leaseExpiresAt > Date.now()
+  ))) {
+    await releaseReclaimerGuard(guard);
+    return false;
+  }
   await rm(file);
-  return true;
+  return guard;
 };
 
 const acquireLock = async (file) => {
@@ -265,13 +352,15 @@ const acquireLock = async (file) => {
   if (!existing) return undefined;
   if (existing.valid && existing.lock.leaseExpiresAt > Date.now()) return undefined;
   if (!existing.valid && Date.now() - (await assertRegularFile(file)).mtimeMs <= LOCK_LEASE_MS) return undefined;
-  if (!(await discardExpiredLock(file, existing))) return undefined;
+  const reclaimerGuard = await discardExpiredLock(file, existing);
+  if (!reclaimerGuard) return undefined;
   const retryCreateLock = async () => {
     return writeLock(file, owner);
   };
   try {
-    return await retryCreateLock();
+    return { ...(await retryCreateLock()), reclaimerGuard };
   } catch (error) {
+    await releaseReclaimerGuard(reclaimerGuard);
     if (!error || error.code !== "EEXIST") throw error;
   }
   return undefined;
@@ -294,6 +383,7 @@ const withFileLock = async (file, callback) => {
     return await callback();
   } finally {
     await releaseLock(lock).catch(() => undefined);
+    if (lock.reclaimerGuard) await releaseReclaimerGuard(lock.reclaimerGuard).catch(() => undefined);
   }
 };
 
