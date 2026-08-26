@@ -63,7 +63,7 @@ test("explains direct and hook-triggered recovery truthfully in English", () => 
     /tool failures?[\s\S]{0,140}explicit (?:diagnosis|diagnostic) request/i,
     /temporary state[\s\S]{0,180}categor(?:y|ies)[\s\S]{0,100}(?:count|timestamp)/i,
     /never (?:stores?|contains?) (?:the )?(?:conversation|prompt|response) text/i,
-    /Korean[\s\S]{0,160}English[\s\S]{0,160}(?:Simplified|Traditional) Chinese[\s\S]{0,160}Japanese/i,
+    /Korean[\s\S]{0,160}English[\s\S]{0,160}Simplified Chinese[\s\S]{0,160}Traditional Chinese[\s\S]{0,160}Japanese/i,
   ], "README.md");
 });
 
@@ -78,7 +78,7 @@ test("explains direct and hook-triggered recovery naturally in Korean", () => {
     /툴 실패[\s\S]{0,140}명시적[\s\S]{0,60}진단 요청/,
     /임시 상태[\s\S]{0,180}(?:범주|종류)[\s\S]{0,100}(?:횟수|개수|타임스탬프|시각)/,
     /대화 (?:내용|원문)[\s\S]{0,60}(?:저장하지|담지)/,
-    /한국어[\s\S]{0,160}영어[\s\S]{0,160}(?:간체|번체)[\s\S]{0,80}중국어[\s\S]{0,160}일본어/,
+    /한국어[\s\S]{0,160}영어[\s\S]{0,160}간체 중국어[\s\S]{0,160}번체 중국어[\s\S]{0,160}일본어/,
   ], "README.ko.md");
 });
 
@@ -116,7 +116,7 @@ test("pins the exact Claude Code and Codex remote install commands", () => {
     "codex plugin add ai-safe-driver@ai-safe-driver",
   ];
 
-  for (const filePath of ["README.md", "README.ko.md"]) {
+  for (const filePath of ["README.md", "README.ko.md", "README.zh-CN.md", "README.zh-TW.md", "README.ja.md"]) {
     const content = read(filePath);
     for (const command of commands) {
       assert.equal(content.includes(command), true, `${filePath} is missing ${command}`);
@@ -236,15 +236,137 @@ test("evaluates multilingual drift signals by preserved decisions", () => {
   }
 });
 
-test("keeps English and Korean narrative pages separate", () => {
-  for (const path of ["README.md", "CONTRIBUTING.md", "evals/cases.md"]) {
+test("ships linked narrative pages in English, Korean, Simplified Chinese, Traditional Chinese, and Japanese", () => {
+  for (const path of ["CONTRIBUTING.md", "evals/cases.md"]) {
     assert.doesNotMatch(read(path), /[\uac00-\ud7a3]/u, `${path} contains Hangul`);
   }
+  assert.match(read("README.md"), /^# AI Safe Driver[\s\S]{0,160}\bEnglish\b/);
   for (const path of ["README.ko.md", "CONTRIBUTING.ko.md", "evals/cases.ko.md"]) {
     assert.match(read(path), /[\uac00-\ud7a3]/u, `${path} lacks Hangul`);
   }
-  assert.match(read("README.md"), /\[Korean\]\(README\.ko\.md\)/);
-  assert.match(read("README.ko.md"), /\[English\]\(README\.md\)/);
+
+  const readmes = ["README.md", "README.ko.md", "README.zh-CN.md", "README.zh-TW.md", "README.ja.md"];
+  for (const filePath of readmes) {
+    const content = read(filePath);
+    for (const linkedPath of readmes) {
+      if (linkedPath !== filePath) assert.match(content, new RegExp(`\\(${linkedPath.replace(".", "\\.")}\\)`));
+    }
+  }
+
+  const simplifiedChinese = read("README.zh-CN.md");
+  assertMatchesAll(simplifiedChinese, [
+    /简体中文/,
+    /韩语[\s\S]{0,160}英语[\s\S]{0,160}简体中文[\s\S]{0,80}繁体中文[\s\S]{0,160}日语/,
+    /直接(?:调用|运行)[\s\S]{0,100}(?:技能|skill)/i,
+    /生气[\s\S]{0,80}(?:不代表|不能|不算)[\s\S]{0,40}漂移/,
+    /不会保存[\s\S]{0,80}(?:对话|提示|回复)[\s\S]{0,40}(?:原文|文字)/,
+  ], "README.zh-CN.md");
+
+  const traditionalChinese = read("README.zh-TW.md");
+  assertMatchesAll(traditionalChinese, [
+    /繁體中文/,
+    /韓文[\s\S]{0,160}英文[\s\S]{0,160}簡體中文[\s\S]{0,80}繁體中文[\s\S]{0,160}日文/,
+    /直接(?:呼叫|執行)[\s\S]{0,100}(?:技能|skill)/i,
+    /生氣[\s\S]{0,80}(?:不代表|不能|不算)[\s\S]{0,40}漂移/,
+    /不會儲存[\s\S]{0,80}(?:對話|提示|回覆)[\s\S]{0,40}(?:原文|文字)/,
+  ], "README.zh-TW.md");
+
+  const japanese = read("README.ja.md");
+  assertMatchesAll(japanese, [
+    /日本語/,
+    /韓国語[\s\S]{0,160}英語[\s\S]{0,160}簡体字[\s\S]{0,80}繁体字[\s\S]{0,160}日本語/,
+    /スキルを直接(?:呼び出|実行)/,
+    /怒り[\s\S]{0,100}ドリフト/,
+    /会話[\s\S]{0,80}(?:原文|本文)[\s\S]{0,40}保存しません/,
+  ], "README.ja.md");
+});
+
+test("keeps the same hook and consent boundaries in all localized readmes", () => {
+  const contracts = [
+    {
+      filePath: "README.md",
+      patterns: [
+        /observed repeated tool failures[\s\S]{0,120}explicit diagnosis request/i,
+        /never automatically (?:runs?|executes?) `\/(?:compact|clear)`/i,
+        /separate approval[\s\S]{0,180}(?:write|create)[\s\S]{0,180}(?:transition|`\/compact`|`\/clear`)/i,
+        /one[- ]time approval[\s\S]{0,180}(?:without|no) valid approval[\s\S]{0,100}(?:does nothing|no changes)/i,
+      ],
+    },
+    {
+      filePath: "README.ko.md",
+      patterns: [
+        /관찰된 반복 툴 실패[\s\S]{0,120}명시적 진단 요청/,
+        /`\/(?:compact|clear)`[\s\S]{0,100}자동으로 실행하지/,
+        /파일[\s\S]{0,100}별도 승인[\s\S]{0,180}(?:전환|`\/compact`|`\/clear`)[\s\S]{0,100}별도 승인/,
+        /일회성 승인[\s\S]{0,180}유효한 승인이 없으면[\s\S]{0,100}아무것도 바꾸지/,
+      ],
+    },
+    {
+      filePath: "README.zh-CN.md",
+      patterns: [
+        /观察到工具反复失败[\s\S]{0,120}明确的诊断请求/,
+        /不会自动执行 `\/(?:compact|clear)`/,
+        /写入文件[\s\S]{0,100}单独批准[\s\S]{0,180}(?:切换|`\/compact`|`\/clear`)[\s\S]{0,100}单独批准/,
+        /一次性批准[\s\S]{0,180}没有有效批准[\s\S]{0,100}不会做任何更改/,
+      ],
+    },
+    {
+      filePath: "README.zh-TW.md",
+      patterns: [
+        /觀察到工具反覆失敗[\s\S]{0,120}明確的診斷要求/,
+        /不會自動執行 `\/(?:compact|clear)`/,
+        /寫入檔案[\s\S]{0,100}另行核准[\s\S]{0,180}(?:切換|`\/compact`|`\/clear`)[\s\S]{0,100}另行核准/,
+        /一次性核准[\s\S]{0,180}沒有有效核准[\s\S]{0,100}不會做任何變更/,
+      ],
+    },
+    {
+      filePath: "README.ja.md",
+      patterns: [
+        /ツールが繰り返し失敗した事実[\s\S]{0,140}明示的な診断依頼/,
+        /`\/(?:compact|clear)` を自動実行しません/,
+        /ファイルへの書き込み[\s\S]{0,100}個別の承認[\s\S]{0,180}(?:遷移|`\/compact`|`\/clear`)[\s\S]{0,100}個別の承認/,
+        /一度限りの承認[\s\S]{0,180}有効な承認がなければ[\s\S]{0,100}何も変更しません/,
+      ],
+    },
+  ];
+
+  for (const { filePath, patterns } of contracts) assertMatchesAll(read(filePath), patterns, filePath);
+});
+
+test("uses locale-native technical prose and keeps English Hangul intentional", () => {
+  assert.doesNotMatch(read("README.zh-CN.md"), /用来处理代理|支持韩文|安静退出|短期类别|同一个失败的工具调用又执行了一遍|是有帮助、没有用|为 `compact` 或 `clear` 中的一种转换/);
+  assertMatchesAll(read("README.zh-CN.md"), [/智能体/, /韩语/, /英语/, /日语/, /静默退出/], "README.zh-CN.md");
+
+  assert.doesNotMatch(read("README.zh-TW.md"), /宿主模型|安靜結束|校驗和|內部處理方式則依照事故復原來做/);
+  assertMatchesAll(read("README.zh-TW.md"), [/AI 代理程式/, /執行這項技能的模型/, /靜默結束/, /SHA-256 雜湊值/], "README.zh-TW.md");
+
+  assert.doesNotMatch(read("README.ja.md"), /決定的ルール|複数の訴え方|足りない事実|Claude CodeとCodex|MCPサーバー|内容の確認と信頼を求める/);
+  assertMatchesAll(read("README.ja.md"), [/あらかじめ定めたルール/, /複数の言い回し/, /不足している情報/], "README.ja.md");
+
+  const hangulLines = read("README.md").split("\n").filter((line) => /[\uac00-\ud7a3]/u.test(line));
+  assert.deepEqual(hangulLines, [
+    "English | [한국어](README.ko.md) | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md) | [日本語](README.ja.md)",
+    "- Korean: `왜 같은 실수를 계속 반복해?`",
+  ]);
+});
+
+test("documents SessionStart timing and both forbidden automatic transitions in every readme", () => {
+  const contracts = [
+    ["README.md", /handover hook runs after `\/compact` or `\/clear`[\s\S]{0,120}loads a handover only when[\s\S]{0,80}approved/i, /never automatically runs [^\n]*`\/compact`/i, /never automatically runs [^\n]*`\/clear`/i],
+    ["README.ko.md", /핸드오버용 훅은 `\/compact`나 `\/clear` 뒤에 실행[\s\S]{0,120}승인[\s\S]{0,80}핸드오버만 불러/, /자동으로 실행하지[^\n]*`\/compact`|`\/compact`[^\n]*자동으로 실행하지/, /자동으로 실행하지[^\n]*`\/clear`|`\/clear`[^\n]*자동으로 실행하지/],
+    ["README.zh-CN.md", /交接钩子会在 `\/compact` 或 `\/clear` 之后运行[\s\S]{0,120}只会载入[\s\S]{0,80}批准/, /不会自动执行[^\n]*`\/compact`|`\/compact`[^\n]*不会自动执行/, /不会自动执行[^\n]*`\/clear`|`\/clear`[^\n]*不会自动执行/],
+    ["README.zh-TW.md", /交接 Hook 會在 `\/compact` 或 `\/clear` 後執行[\s\S]{0,120}只會載入[\s\S]{0,80}核准/, /不會自動執行[^\n]*`\/compact`|`\/compact`[^\n]*不會自動執行/, /不會自動執行[^\n]*`\/clear`|`\/clear`[^\n]*不會自動執行/],
+    ["README.ja.md", /引き継ぎフックは `\/compact` または `\/clear` の後に動き[\s\S]{0,120}承認[\s\S]{0,80}引き継ぎだけを読み込/, /自動実行しません[^\n]*`\/compact`|`\/compact`[^\n]*自動実行しません/, /自動実行しません[^\n]*`\/clear`|`\/clear`[^\n]*自動実行しません/],
+  ];
+
+  for (const [filePath, timing, compact, clear] of contracts) {
+    const content = read(filePath);
+    assert.match(content, timing, `${filePath} does not describe actual SessionStart timing`);
+    assert.match(content, compact, `${filePath} does not forbid automatic /compact`);
+    assert.match(content, clear, `${filePath} does not forbid automatic /clear`);
+    assert.match(content, /\(CONTRIBUTING\.md\)/, `${filePath} does not link English contributing guidance`);
+    assert.match(content, /\(CONTRIBUTING\.ko\.md\)/, `${filePath} does not link Korean contributing guidance`);
+  }
 });
 
 test("defines an on-demand metaphorical dashboard and protects strict formats", () => {

@@ -1,16 +1,28 @@
 # AI Safe Driver
 
-English | [Korean](README.ko.md)
+English | [한국어](README.ko.md) | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md) | [日本語](README.ja.md)
 
-AI Safe Driver is a recovery skill for conversations that have started repeating the same mistake. You can call it directly. Local deterministic hooks may also wake it when they observe a correction, an acknowledgment or repair promise, and the same complaint returning. The hooks provide a reason to inspect the visible conversation, not a final diagnosis.
+AI Safe Driver helps recover a conversation when an agent starts repeating the same mistake. You can call the skill directly. Local deterministic hooks may also wake it after they observe a correction, an acknowledgment or repair promise, and then the same complaint again. A hook is a reason to inspect the visible conversation, not a diagnosis by itself.
 
-These rules may miss unfamiliar wording, so direct invocation remains available. Anger alone is not drift. A tool failure needs an explicit diagnosis request before the hook treats it as a diagnostic signal. Temporary state stores only short-lived categories, counts, and timestamps; it never stores conversation text. Automatic phrase coverage includes Korean, English, Simplified and Traditional Chinese, and Japanese.
+The phrase rules may miss unfamiliar wording, so direct invocation remains available. Anger alone is not drift. Observed repeated tool failures become diagnostic signals only after an explicit diagnosis request. Temporary state stores short-lived categories, counts, and timestamps. It never stores conversation text.
+
+## Supported languages
+
+Automatic phrase coverage includes Korean, English, Simplified Chinese, Traditional Chinese, and Japanese. Direct invocation works in any language the host model understands.
+
+- Korean: `왜 같은 실수를 계속 반복해?`
+- English: `Why do you keep making the same mistake?`
+- Simplified Chinese: `我说了多少遍了，怎么还是没改？`
+- Traditional Chinese: `我都說過多少次了，怎麼還是錯的？`
+- Japanese: `何回同じことを言わせるの？`
+
+These examples are not passwords or exact commands. The hooks match several complaint patterns in each supported language, while ordinary requests such as "explain it again" do not count as drift.
 
 The dashboard is deliberately a little ridiculous. When you ask for a health check, it may report `Drifting safely. 0%` or `Drifting safely. 100%`. It stays out of ordinary replies. The number is a rule-based label, not a reading of model weights, attention, or some hidden internal drift meter.
 
 At 75% or 100%, it asks `Would you like me to countersteer?` That means stopping the approach that keeps failing and suggesting one limited way to recover. A yes only starts that discussion. It does not give the plugin permission to write files, retry tools, compact the conversation, or clear the session. Those actions still need separate approval.
 
-Claude Code and Codex use the same skill. The plugin also includes local recovery hooks and a handover hook. Recovery hooks never retry tools, write project files, create or arm a handover, compact, or clear. The handover hook normally does nothing and runs only after you approve and prepare a one-time handover. There is no executable installer, MCP server, network code, or automatic update check.
+Claude Code and Codex use the same skill. The plugin also includes local recovery hooks and a handover hook. Recovery hooks never retry tools, write project files, create or arm a handover, compact, or clear. The handover hook runs after `/compact` or `/clear`, but it loads a handover only when you approved and prepared one. There is no executable installer, MCP server, network code, or automatic update check.
 
 ## Install
 
@@ -82,11 +94,13 @@ Diagnosis is read-only. A high-risk result may suggest a handover, but the skill
 
 Installing the plugin or trusting its hook does not approve either action. You still type `/compact` or `/clear` yourself; the plugin never runs those commands for you. `/compact` summarizes the current conversation and keeps going. `/clear` starts a new chat, so the skill treats it as the more disruptive choice.
 
-The bundled `SessionStart` hook works once per approval. It loads the handover only when the requested transition and file checksum match a short-lived approval record. Afterward, it removes the approval record but leaves the handover file for inspection. Without valid approval, the hook exits quietly and changes nothing. Claude Code and Codex may also ask you to review and trust this third-party hook before running it.
+Separate approval is required to write the handover file and to prepare either transition. The plugin never automatically runs `/compact` or `/clear`.
+
+The bundled `SessionStart` hook consumes a one-time approval; without valid approval, it does nothing and makes no changes. It loads the handover only when the requested transition and file checksum match a short-lived approval record. Afterward, it removes the approval record but leaves the handover file for inspection. Claude Code and Codex may also ask you to review and trust this third-party hook before running it.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development and release checks.
+See [CONTRIBUTING.md](CONTRIBUTING.md) in English or [CONTRIBUTING.ko.md](CONTRIBUTING.ko.md) in Korean for development and release checks.
 
 ## License
 
