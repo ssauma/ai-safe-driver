@@ -59,10 +59,10 @@ const TOOL_REPEAT = /(?:또|다시|계속|반복|같은|again|repeated|same|keep
 const TOOL_DIAGNOSE = /(?:분석|점검|원인|왜|진단|analyse|analyze|diagnose|check|why|分析|检查|檢查|原因|为什么|為什麼|診断|なぜ|調べ)/iu;
 const OBSERVED_TOOL_FAILURE = /(?:실패(?:했|했습니다|했다|했어|했어요)|오류(?:가|도)?\s*(?:났|발생했)|\bfailed\b|(?:失败|失敗)(?:了|过|過)|(?:错误|錯誤)(?:了|发生|發生)|失敗(?:しました|した|している|しています)|エラー(?:が)?(?:出|発生)|エラーにな(?:った|りました))/iu;
 const OBSERVED_SUCCESS = [
-  /(?=.*실패하지\s*않)(?=.*(?:오류|에러|문제).{0,30}(?:없|해결|해소))/iu,
-  /(?=.*\b(?:did not|didn't|has not|hasn't|have not|haven't)\s+fail(?:ed)?\b)(?=.*\b(?:error|issue|problem)\b.{0,60}\b(?:resolved|fixed|gone|absent)\b)/iu,
-  /(?=.*(?:没有|沒有|未).{0,12}(?:失败|失敗|出错|出錯))(?=.*(?:错误|錯誤|问题|問題).{0,20}(?:解决|解決|修复|修復))/iu,
-  /(?=.*失敗しませんでした)(?=.*(?:エラー|問題).{0,30}(?:解消|解決|ありません|なかった))/u,
+  /실패하지\s*않(?:았|았습|았다|았어|았어요)/iu,
+  /\b(?:did not|didn't|has not|hasn't|have not|haven't)\s+fail(?:ed)?\b/iu,
+  /(?:没有|沒有|未).{0,12}(?:失败|失敗|出错|出錯)/u,
+  /失敗しませんでした/u,
 ];
 const PROSPECTIVE_TEST_INSTRUCTION = [
   /(?=.*단위\s*테스트)(?=.*(?:작성|만들|추가|설계))(?=.*(?:경우|상황|가정|재현))/iu,
