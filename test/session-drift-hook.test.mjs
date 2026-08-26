@@ -545,36 +545,39 @@ test("a state file swapped to a symlink after validation is never read through",
   assert.equal(readFileSync(victim, "utf8"), victimSerialized);
 });
 
-test("simultaneous stale-lock reclaimers cannot evict a live successor or enter a second callback", async () => {
-  const root = makeStateDir("stale-reclaimer-race");
-  const firstBarrier = makeStateDir("stale-reclaimer-first");
-  const secondBarrier = makeStateDir("stale-reclaimer-second");
-  const sessionId = "session-stale-reclaimer-race";
+test("two reclaimers that both reread one stale lock cannot unlink a successor or overlap callbacks", async () => {
+  const root = makeStateDir("stale-reread-race");
+  const firstBarrier = makeStateDir("stale-reread-first");
+  const secondBarrier = makeStateDir("stale-reread-second");
+  const sessionId = "session-stale-reread-race";
   writeFileSync(lockFile(root, sessionId), JSON.stringify({
     owner: "expired-hook",
     leaseExpiresAt: Date.now() - 1,
   }), { mode: 0o600 });
+  const first = startDriftHook(root, {
+    hook_event_name: "UserPromptSubmit", session_id: sessionId, prompt: "안 했잖아.",
+  }, {
+    AI_SAFE_DRIVER_TEST_BARRIER_DIR: firstBarrier,
+    AI_SAFE_DRIVER_TEST_BARRIERS: "after-stale-lock-reread,before-lock-release",
+  });
+  await waitForBarrier(first, firstBarrier, "after-stale-lock-reread");
   const second = startDriftHook(root, {
     hook_event_name: "UserPromptSubmit", session_id: sessionId,
     prompt: "You said you would fix it and still did not.",
   }, {
     AI_SAFE_DRIVER_TEST_BARRIER_DIR: secondBarrier,
-    AI_SAFE_DRIVER_TEST_BARRIER: "before-stale-lock-unlink",
+    AI_SAFE_DRIVER_TEST_BARRIERS: "after-stale-lock-reread",
   });
 
-  await waitForBarrier(second, secondBarrier, "before-stale-lock-unlink");
-  const first = startDriftHook(root, {
-    hook_event_name: "UserPromptSubmit", session_id: sessionId, prompt: "안 했잖아.",
-  }, {
-    AI_SAFE_DRIVER_TEST_BARRIER_DIR: firstBarrier,
-    AI_SAFE_DRIVER_TEST_BARRIER: "before-lock-release",
-  });
+  await waitForBarrier(second, secondBarrier, "after-stale-lock-reread");
+  releaseBarrier(firstBarrier, "after-stale-lock-reread");
   await waitForBarrier(first, firstBarrier, "before-lock-release");
-
-  releaseBarrier(secondBarrier, "before-stale-lock-unlink");
   assertNoOutput(await second.result);
   assert.equal(readState(root, sessionId).correctionCount, 1);
   assert.equal(lstatSync(lockFile(root, sessionId)).isFile(), true);
+  const successor = JSON.parse(readFileSync(lockFile(root, sessionId), "utf8"));
+  assert.notEqual(successor.owner, "expired-hook");
+  assert.ok(successor.leaseExpiresAt > Date.now());
   releaseBarrier(firstBarrier, "before-lock-release");
   assertNoOutput(await first.result);
   assert.equal(existsSync(lockFile(root, sessionId)), false);
