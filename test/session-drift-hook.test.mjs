@@ -544,3 +544,60 @@ test("a state file swapped to a symlink after validation is never read through",
   assert.equal(lstatSync(file).isSymbolicLink(), true);
   assert.equal(readFileSync(victim, "utf8"), victimSerialized);
 });
+
+test("simultaneous stale-lock reclaimers cannot evict a live successor or enter a second callback", async () => {
+  const root = makeStateDir("stale-reclaimer-race");
+  const firstBarrier = makeStateDir("stale-reclaimer-first");
+  const secondBarrier = makeStateDir("stale-reclaimer-second");
+  const sessionId = "session-stale-reclaimer-race";
+  writeFileSync(lockFile(root, sessionId), JSON.stringify({
+    owner: "expired-hook",
+    leaseExpiresAt: Date.now() - 1,
+  }), { mode: 0o600 });
+  const second = startDriftHook(root, {
+    hook_event_name: "UserPromptSubmit", session_id: sessionId,
+    prompt: "You said you would fix it and still did not.",
+  }, {
+    AI_SAFE_DRIVER_TEST_BARRIER_DIR: secondBarrier,
+    AI_SAFE_DRIVER_TEST_BARRIER: "before-stale-lock-unlink",
+  });
+
+  await waitForBarrier(second, secondBarrier, "before-stale-lock-unlink");
+  const first = startDriftHook(root, {
+    hook_event_name: "UserPromptSubmit", session_id: sessionId, prompt: "안 했잖아.",
+  }, {
+    AI_SAFE_DRIVER_TEST_BARRIER_DIR: firstBarrier,
+    AI_SAFE_DRIVER_TEST_BARRIER: "before-lock-release",
+  });
+  await waitForBarrier(first, firstBarrier, "before-lock-release");
+
+  releaseBarrier(secondBarrier, "before-stale-lock-unlink");
+  assertNoOutput(await second.result);
+  assert.equal(readState(root, sessionId).correctionCount, 1);
+  assert.equal(lstatSync(lockFile(root, sessionId)).isFile(), true);
+  releaseBarrier(firstBarrier, "before-lock-release");
+  assertNoOutput(await first.result);
+  assert.equal(existsSync(lockFile(root, sessionId)), false);
+});
+
+test("a malformed state for one session cannot suppress another session's recovery cycle", () => {
+  const root = makeStateDir("corrupt-session-isolation");
+  const corruptSession = "session-corrupt";
+  const healthySession = "session-healthy";
+  writeFileSync(stateFile(root, corruptSession), "{corrupt json", { mode: 0o600 });
+
+  assertNoOutput(runDriftHook(root, {
+    hook_event_name: "UserPromptSubmit", session_id: healthySession, prompt: "안 했잖아.",
+  }));
+  assert.equal(readState(root, healthySession).correctionCount, 1);
+  assertNoOutput(runDriftHook(root, {
+    hook_event_name: "Stop", session_id: healthySession,
+    last_assistant_message: "맞습니다. 죄송합니다. 다시 고치겠습니다.",
+  }));
+  const recurrence = runDriftHook(root, {
+    hook_event_name: "UserPromptSubmit", session_id: healthySession, prompt: "한다고 해놓고 또 안 했잖아.",
+  });
+  assertSucceeded(recurrence);
+  assert.equal(JSON.parse(recurrence.stdout).hookSpecificOutput.hookEventName, "UserPromptSubmit");
+  assert.equal(readState(root, healthySession).recoveryInjected, true);
+});
