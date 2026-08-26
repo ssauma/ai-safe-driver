@@ -179,6 +179,22 @@ test("does not mistake observed-success negations for agent failure complaints",
   }
 });
 
+test("accepts standalone natural non-failure reports without a resolution clause", () => {
+  for (const text of [
+    "The build didn't fail again; that is the expected result.",
+    "테스트가 또 실패하지 않았습니다.",
+    "这个工具又没有失败，这是预期结果。",
+    "這個工具又沒有失敗，這是預期結果。",
+    "同じツールはまた失敗しませんでした。",
+  ]) {
+    const signals = classifyUserPrompt(text);
+    assert.equal(signals.correction, false, text);
+    assert.equal(signals.recurrence, false, text);
+    assert.equal(signals.protest, false, text);
+    assert.equal(signals.explicitToolDiagnosis, false, text);
+  }
+});
+
 test("does not mistake prospective unit-test instructions for observed agent failures", () => {
   for (const text of [
     "같은 툴 호출이 또 실패하는 경우의 원인을 진단하는 단위 테스트를 작성해.",
