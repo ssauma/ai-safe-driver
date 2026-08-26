@@ -337,14 +337,10 @@ const cleanupHistoricalReclaimerGuards = async () => {
   const currentEpoch = reclaimerEpoch();
   let inspected = 0;
   let removed = 0;
-  let exhausted = false;
   try {
     while (inspected < MAX_RECLAIMER_GUARD_INSPECTIONS && removed < MAX_RECLAIMER_GUARD_CLEANUP) {
       const entry = await directory.read();
-      if (!entry) {
-        exhausted = true;
-        break;
-      }
+      if (!entry) break;
       inspected += 1;
       if (!entry.isFile() || entry.isSymbolicLink()) continue;
       const parts = guardNameParts(entry.name);
@@ -363,7 +359,7 @@ const cleanupHistoricalReclaimerGuards = async () => {
       }
     }
   } finally {
-    if (!exhausted) await directory.close();
+    await directory.close();
   }
 };
 
