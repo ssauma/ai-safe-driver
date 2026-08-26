@@ -134,7 +134,7 @@ test("treats hook evidence as a recovery prompt rather than a final diagnosis", 
     /reason to inspect evidence, not as proof of drift/i,
     /not as a final dashboard percentage/i,
     /If the evidence does not show repetition[\s\S]{0,120}without escalating/i,
-    /Anger, profanity, capitalization, or punctuation alone never raises the drift label/i,
+    /Anger[\s\S]{0,80}profanity[\s\S]{0,80}capitalization[\s\S]{0,80}punctuation[\s\S]{0,80}repeated characters[\s\S]{0,80}alone never raises the drift label/i,
     /Hook state is not permission to retry a tool, write a file, create or arm a handover, compact, or clear/i,
   ], `${skillRoot}/SKILL.md`);
 });
