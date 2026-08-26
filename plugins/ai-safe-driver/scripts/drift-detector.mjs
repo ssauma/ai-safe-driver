@@ -57,7 +57,7 @@ const TOOL_WORD = /(?:툴|도구|호출|명령|command|tool|call|mcp|工具|调�
 const TOOL_FAILURE = /(?:실패|오류|에러|failed|failure|error|失败|失敗|错误|錯誤|エラー)/iu;
 const TOOL_REPEAT = /(?:또|다시|계속|반복|같은|again|repeated|same|keep|又|还|還|重复|重複|また|何度|繰り返)/iu;
 const TOOL_DIAGNOSE = /(?:분석|점검|원인|왜|진단|analyse|analyze|diagnose|check|why|分析|检查|檢查|原因|为什么|為什麼|診断|なぜ|調べ)/iu;
-const OBSERVED_TOOL_FAILURE = /(?:실패(?:했|했습니다|했다|했어|했어요)|오류(?:가|도)?\s*(?:났|발생했)|\bfailed\b|(?:失败|失敗)(?:了|过|過)|(?:错误|錯誤)(?:了|发生|發生)|失敗(?:しました|した|している|しています)|エラー(?:が)?(?:出|発生))/iu;
+const OBSERVED_TOOL_FAILURE = /(?:실패(?:했|했습니다|했다|했어|했어요)|오류(?:가|도)?\s*(?:났|발생했)|\bfailed\b|(?:失败|失敗)(?:了|过|過)|(?:错误|錯誤)(?:了|发生|發生)|失敗(?:しました|した|している|しています)|エラー(?:が)?(?:出|発生)|エラーにな(?:った|りました))/iu;
 const OBSERVED_SUCCESS = [
   /(?=.*실패하지\s*않)(?=.*(?:오류|에러|문제).{0,30}(?:없|해결|해소))/iu,
   /(?=.*\b(?:did not|didn't|has not|hasn't|have not|haven't)\s+fail(?:ed)?\b)(?=.*\b(?:error|issue|problem)\b.{0,60}\b(?:resolved|fixed|gone|absent)\b)/iu,

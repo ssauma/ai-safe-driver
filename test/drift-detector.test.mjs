@@ -158,6 +158,7 @@ test("requires an explicit repeated-tool diagnosis request", () => {
     "同一个工具调用又失败了。请分析原因。",
     "同一個工具調用又失敗了。請分析原因。",
     "同じツール呼び出しがまた失敗しました。原因を診断してください。",
+    "同じツール呼び出しがまたエラーになった原因を診断して。",
   ]) assert.equal(classifyUserPrompt(text).explicitToolDiagnosis, true, text);
   assert.equal(classifyUserPrompt("툴이 실패했어.").explicitToolDiagnosis, false);
 });
