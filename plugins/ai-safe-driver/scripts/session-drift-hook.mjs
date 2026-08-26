@@ -318,20 +318,16 @@ const activeReclaimerGuards = async (lockFile, lockIdentity) => {
 const cleanupHistoricalReclaimerGuards = async () => {
   const entries = await readdir(root, { withFileTypes: true });
   const currentEpoch = reclaimerEpoch();
-  let inspected = 0;
+  let removed = 0;
   for (const entry of entries) {
     if (!entry.isFile() || entry.isSymbolicLink()) continue;
     const parts = guardNameParts(entry.name);
     if (!parts || parts.epoch > currentEpoch - ACTIVE_GUARD_EPOCH_WINDOW - 1) continue;
-    if (inspected >= MAX_RECLAIMER_GUARD_CLEANUP) break;
-    inspected += 1;
+    if (removed >= MAX_RECLAIMER_GUARD_CLEANUP) break;
     try {
       const file = path.join(root, entry.name);
-      const record = await readReclaimerGuard(file);
-      if (!record?.valid || record.lock.leaseExpiresAt > clockNow()) continue;
-      if (record.lock.lockDev !== parts.lockDev || record.lock.lockIno !== parts.lockIno) continue;
-      if (record.lock.epoch !== parts.epoch) continue;
       await rm(file);
+      removed += 1;
     } catch (error) {
       if (!isMissing(error)) continue;
     }
