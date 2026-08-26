@@ -57,14 +57,28 @@ const TOOL_WORD = /(?:툴|도구|호출|명령|command|tool|call|mcp|工具|调�
 const TOOL_FAILURE = /(?:실패|오류|에러|failed|failure|error|失败|失敗|错误|錯誤|エラー)/iu;
 const TOOL_REPEAT = /(?:또|다시|계속|반복|같은|again|repeated|same|keep|又|还|還|重复|重複|また|何度|繰り返)/iu;
 const TOOL_DIAGNOSE = /(?:분석|점검|원인|왜|진단|analyse|analyze|diagnose|check|why|分析|检查|檢查|原因|为什么|為什麼|診断|なぜ|調べ)/iu;
+const OBSERVED_TOOL_FAILURE = /(?:실패(?:했|했습니다|했다|했어|했어요)|오류(?:가|도)?\s*(?:났|발생했)|\bfailed\b|(?:失败|失敗)(?:了|过|過)|(?:错误|錯誤)(?:了|发生|發生)|失敗(?:しました|した|している|しています)|エラー(?:が)?(?:出|発生))/iu;
+const OBSERVED_SUCCESS = [
+  /(?=.*실패하지\s*않)(?=.*(?:오류|에러|문제).{0,30}(?:없|해결|해소))/iu,
+  /(?=.*\b(?:did not|didn't|has not|hasn't|have not|haven't)\s+fail(?:ed)?\b)(?=.*\b(?:error|issue|problem)\b.{0,60}\b(?:resolved|fixed|gone|absent)\b)/iu,
+  /(?=.*(?:没有|沒有|未).{0,12}(?:失败|失敗|出错|出錯))(?=.*(?:错误|錯誤|问题|問題).{0,20}(?:解决|解決|修复|修復))/iu,
+  /(?=.*失敗しませんでした)(?=.*(?:エラー|問題).{0,30}(?:解消|解決|ありません|なかった))/u,
+];
+const PROSPECTIVE_TEST_INSTRUCTION = [
+  /(?=.*단위\s*테스트)(?=.*(?:작성|만들|추가|설계))(?=.*(?:경우|상황|가정|재현))/iu,
+  /(?:write|create|add|design)\s+(?:a\s+)?(?:unit\s+test|test\s+case)\b/iu,
+  /(?=.*(?:单元测试|單元測試))(?=.*(?:写|寫|创建|創建|新增))(?=.*(?:模拟|模擬|如果|假设|假設|情况|情況))/u,
+  /(?=.*(?:単体テスト|ユニットテスト))(?=.*(?:書|作成|追加|設計))(?=.*(?:場合|仮定|再現|ケース))/u,
+];
 
 export const classifyUserPrompt = (value) => {
   const text = normalized(value);
-  const recurrence = testAny(STRONG_RECURRENCE, text) || (RECURRENCE_MARKER.test(text) && FAILURE_ANCHOR.test(text));
+  const nonComplaint = testAny(OBSERVED_SUCCESS, text) || testAny(PROSPECTIVE_TEST_INSTRUCTION, text);
+  const recurrence = !nonComplaint && (testAny(STRONG_RECURRENCE, text) || (RECURRENCE_MARKER.test(text) && FAILURE_ANCHOR.test(text)));
   return {
-    correction: testAny(USER_CORRECTION, text), recurrence, protest: testAny(USER_PROTEST, text),
+    correction: !nonComplaint && testAny(USER_CORRECTION, text), recurrence, protest: !nonComplaint && testAny(USER_PROTEST, text),
     explicitHealthCheck: testAny(HEALTH_CHECK, text),
-    explicitToolDiagnosis: TOOL_WORD.test(text) && TOOL_FAILURE.test(text) && TOOL_REPEAT.test(text) && TOOL_DIAGNOSE.test(text),
+    explicitToolDiagnosis: !nonComplaint && TOOL_WORD.test(text) && TOOL_FAILURE.test(text) && OBSERVED_TOOL_FAILURE.test(text) && TOOL_REPEAT.test(text) && TOOL_DIAGNOSE.test(text),
     emphasis: /[!?]{3,}/u.test(text) || /(.)\1{4,}/u.test(text) || /\b[A-Z\s]{8,}\b/u.test(text),
   };
 };
