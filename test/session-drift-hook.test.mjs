@@ -567,13 +567,13 @@ test("two reclaimers ignore a crashed guard without deleting the current epoch s
     leaseExpiresAt: now - 1,
   }), { mode: 0o600 });
   const identity = lstatSync(staleLock);
-  const crashedGuard = reclaimerGuardFile(root, sessionId, identity, epoch - 1);
+  const crashedGuard = reclaimerGuardFile(root, sessionId, identity, epoch - 3);
   writeFileSync(crashedGuard, JSON.stringify({
     owner: "crashed-reclaimer",
     leaseExpiresAt: now - 1,
     lockDev: identity.dev,
     lockIno: identity.ino,
-    epoch: epoch - 1,
+    epoch: epoch - 3,
   }), { mode: 0o600 });
   const first = startDriftHook(root, {
     hook_event_name: "UserPromptSubmit", session_id: sessionId, prompt: "안 했잖아.",
@@ -598,7 +598,7 @@ test("two reclaimers ignore a crashed guard without deleting the current epoch s
   assertNoOutput(await second.result);
   assert.equal(readState(root, sessionId).correctionCount, 1);
   assert.equal(lstatSync(lockFile(root, sessionId)).isFile(), true);
-  assert.equal(existsSync(crashedGuard), true);
+  assert.equal(existsSync(crashedGuard), false);
   const successorGuard = reclaimerGuardFile(root, sessionId, identity, epoch);
   assert.equal(existsSync(successorGuard), true);
   const successor = JSON.parse(readFileSync(successorGuard, "utf8"));
@@ -608,7 +608,7 @@ test("two reclaimers ignore a crashed guard without deleting the current epoch s
   assertNoOutput(await first.result);
   assert.equal(existsSync(lockFile(root, sessionId)), false);
   assert.equal(existsSync(successorGuard), false);
-  assert.equal(existsSync(crashedGuard), true);
+  assert.equal(existsSync(crashedGuard), false);
 });
 
 test("an active adjacent-epoch reclaimer guard excludes a current-epoch contender", () => {
@@ -642,6 +642,56 @@ test("an active adjacent-epoch reclaimer guard excludes a current-epoch contende
   }, extraEnv));
   assert.equal(existsSync(stateFile(root, sessionId)), false);
   assert.deepEqual(JSON.parse(readFileSync(activePreviousEpochGuard, "utf8")), activeGuard);
+});
+
+test("pruning bounds expired historical guards without deleting active foreign guards", () => {
+  const root = makeStateDir("reclaimer-guard-pruning");
+  const sessionId = "session-reclaimer-guard-pruning";
+  const now = 3_000_000;
+  const epochMs = 1_000;
+  const epoch = now / epochMs;
+  const extraEnv = {
+    AI_SAFE_DRIVER_TEST_NOW_MS: String(now),
+    AI_SAFE_DRIVER_TEST_RECLAIM_EPOCH_MS: String(epochMs),
+  };
+  const staleLock = lockFile(root, sessionId);
+  writeFileSync(staleLock, JSON.stringify({
+    owner: "expired-hook",
+    leaseExpiresAt: now - 1,
+  }), { mode: 0o600 });
+  const identity = lstatSync(staleLock);
+  const historicalGuards = Array.from({ length: 8 }, (_, index) => {
+    const guardEpoch = epoch - index - 3;
+    const file = reclaimerGuardFile(root, sessionId, identity, guardEpoch);
+    writeFileSync(file, JSON.stringify({
+      owner: `crashed-${guardEpoch}`,
+      leaseExpiresAt: now - 1,
+      lockDev: identity.dev,
+      lockIno: identity.ino,
+      epoch: guardEpoch,
+    }), { mode: 0o600 });
+    return file;
+  });
+  const activeCurrentGuard = reclaimerGuardFile(root, sessionId, identity, epoch);
+  const activeAdjacentGuard = reclaimerGuardFile(root, sessionId, identity, epoch - 1);
+  const currentRecord = {
+    owner: "foreign-current-epoch",
+    leaseExpiresAt: now + epochMs,
+    lockDev: identity.dev,
+    lockIno: identity.ino,
+    epoch,
+  };
+  const adjacentRecord = { ...currentRecord, owner: "foreign-adjacent-epoch", epoch: epoch - 1 };
+  writeFileSync(activeCurrentGuard, JSON.stringify(currentRecord), { mode: 0o600 });
+  writeFileSync(activeAdjacentGuard, JSON.stringify(adjacentRecord), { mode: 0o600 });
+
+  assertNoOutput(runDriftHook(root, {
+    hook_event_name: "UserPromptSubmit", session_id: sessionId, prompt: "안 했잖아.",
+  }, extraEnv));
+  assert.equal(existsSync(stateFile(root, sessionId)), false);
+  for (const historicalGuard of historicalGuards) assert.equal(existsSync(historicalGuard), false);
+  assert.deepEqual(JSON.parse(readFileSync(activeCurrentGuard, "utf8")), currentRecord);
+  assert.deepEqual(JSON.parse(readFileSync(activeAdjacentGuard, "utf8")), adjacentRecord);
 });
 
 test("a malformed state for one session cannot suppress another session's recovery cycle", () => {
