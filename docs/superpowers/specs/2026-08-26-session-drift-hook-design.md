@@ -36,7 +36,7 @@ A `UserPromptSubmit` command hook classifies the current user message into zero 
 
 Emphasis is classified only to enforce the negative rule: it is neither persisted nor emitted and cannot create a trigger on its own.
 
-The correction and protest categories recognize several recurring shapes without storing their wording:
+The correction and protest categories recognize several recurring shapes in Korean, English, Simplified or Traditional Chinese, and Japanese without storing their wording:
 
 - re-anchor: the user says the answer addressed the wrong thing or restates what was actually requested;
 - omission or no-op: the user says a requested change is still missing, unchanged, or was claimed but not applied;
@@ -47,6 +47,8 @@ The correction and protest categories recognize several recurring shapes without
 - oscillation: the user reports that the answer, status, or chosen direction keeps flipping back and forth.
 
 Recurrence markers such as “again,” “still,” `또`, `다시`, and `계속` are too common to classify alone. They count only when the same prompt also contains a failure, mismatch, reversal, or protest anchor, or when a stronger recurrence phrase explicitly refers to the same mistake. Neutral phrases equivalent to “continue,” “another question,” or “explain again” do not count as recurrence.
+
+The same boundary applies across languages. Chinese `又` commonly marks a recurrence that already happened, while `再` often asks for a future repetition; Japanese `また` can mean an ordinary “again.” None of these characters triggers without a failure anchor. The classifier recognizes combinations equivalent to “why did you do it again,” “I already told you,” “the same mistake again,” “you said you fixed it but it is still unchanged,” and “the format returned to the old version.”
 
 ### Assistant response hook
 
@@ -125,6 +127,20 @@ Examples supplied directly by the user include repeated assistant phrases such a
 
 An aggregate-only review of the local corpus also supports the anonymized categories above: re-anchoring, unchanged or missing work, broken promises, unauthorized scope, repeated questions instead of action, output-contract regression, and back-and-forth status claims. Common standalone words such as “again,” “continue,” “format,” `또`, `계속`, and `형식` appeared too broadly to be safe triggers. Tests therefore include both synthetic positive cases and neutral uses of those words.
 
+## Public multilingual signal review
+
+Public reports add two important drift shapes. One Codex report describes obsolete task state resurfacing after correction and answers becoming disconnected from the newest message. Another model issue describes unchanged broken solutions returning after explicit constraints and corrections, followed by apology without a changed approach. Japanese reports describe a required style or format initially being followed and later returning to the default, or an acknowledgment being followed by substantially the same output. Chinese usage references distinguish completed recurrence with `又` from a request to do something again with `再`, and document complaint constructions that combine “how/why again” with a problematic action.
+
+Sources used to derive categories and synthetic cases:
+
+- [Codex stale conversation state issue](https://github.com/openai/codex/issues/32863)
+- [Repeated correction and unchanged solution issue](https://github.com/deepseek-ai/DeepSeek-R1/issues/869)
+- [Japanese instruction-regression examples](https://note.com/large_harte6380/n/n7baedcd2d2a5)
+- [Japanese instruction drift discussion](https://qiita.com/ha-te/items/1c502c80969ce721f1d9)
+- [Chinese `又` and `再` usage examples](https://tiffanysmandarin.com/index.php/2023/08/31/again-chinese-grammar/)
+
+Only the signal categories and newly written synthetic examples enter tests. The hook does not fetch these pages, ship a phrase corpus, or send user text anywhere.
+
 ## README contract
 
 The README must not say that AI Safe Driver always notices drift by itself. It should say:
@@ -140,7 +156,7 @@ The README must not say that AI Safe Driver always notices drift by itself. It s
 
 ### Classifier tests
 
-Cover Korean and English examples for corrections, recurrence, protest, acknowledgment, apology, repair promises, explicit health checks, explicit tool diagnosis, emphasis, and neutral uses of the same words.
+Cover Korean, English, Simplified and Traditional Chinese, and Japanese examples for corrections, recurrence, protest, acknowledgment, apology, repair promises, explicit health checks, explicit tool diagnosis, emphasis, and neutral uses of the same words.
 
 ### Sequence tests
 
