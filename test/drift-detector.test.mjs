@@ -8,13 +8,17 @@ import {
   createInitialState,
 } from "../plugins/ai-safe-driver/scripts/drift-detector.mjs";
 
-test("classifies user correction and recurrence signals in Korean and English", () => {
+test("classifies user correction and recurrence signals across supported languages", () => {
   const cases = [
     ["안 했잖아.", { correction: true }],
     ["한다고 해놓고 또 안 했잖아.", { correction: true, recurrence: true }],
     ["왜 같은 실수를 계속 반복해?", { recurrence: true, protest: true }],
     ["You said you would fix it and still did not.", { correction: true, recurrence: true }],
     ["Why do you keep making the same mistake?", { recurrence: true, protest: true }],
+    ["你说已经改好了，怎么还是没改？", { correction: true, recurrence: true, protest: true }],
+    ["我都說過不要動那一段，你怎麼又改了？", { correction: true, recurrence: true, protest: true }],
+    ["修正すると言ったのに、また同じ間違いです。", { correction: true, recurrence: true }],
+    ["何度言えば分かるの？ また元の形式に戻っています。", { recurrence: true, protest: true }],
   ];
   for (const [text, expected] of cases) {
     const actual = classifyUserPrompt(text);
@@ -54,6 +58,8 @@ test("does not treat neutral recurrence words as a repeated failure", () => {
   for (const text of [
     "계속 진행해.", "또 다른 질문이 있어.", "다시 설명해줘.",
     "Continue with the plan.", "I have another question.", "Explain it again.",
+    "请再解释一次。", "还有一个问题。", "请继续处理。",
+    "このまま続けてください。", "また後で確認します。", "別の質問があります。",
   ]) assert.equal(classifyUserPrompt(text).recurrence, false, text);
 });
 
@@ -69,6 +75,11 @@ test("recognizes additional correction shapes without using emotion as proof", (
     "You said you fixed it, but the output format broke again.",
     "I told you not to change that, and you did it again.",
     "Stop asking the same question and do the requested step.",
+    "这不是我让你做的。", "别再道歉了，先把漏掉的内容补上。",
+    "你又说做完了，可是内容还是没变。",
+    "そうじゃなくて、私が頼んだのはそこだけです。",
+    "触らないでと言ったところまで、また変えています。",
+    "謝るだけで、まだ直っていません。",
   ];
   for (const text of cases) {
     const signals = classifyUserPrompt(text);
