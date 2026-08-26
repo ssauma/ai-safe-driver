@@ -434,8 +434,8 @@ test("unrecognized state keys are rejected and raw text never survives a state u
     "expiresAt",
     "lastSignalAt",
     "protestCount",
-    "recurrenceCount",
     "recoveryInjected",
+    "recurrenceCount",
     "repairPromised",
     "schema",
   ]);
