@@ -1,6 +1,9 @@
 ---
 name: ai-safe-driver
-description: 정상운행중입니다. Use when the user reports that the agent is repeating a mistake, ignoring a correction, retrying a failed tool call unchanged, violating an output format again, losing constraints in a long session, drifting from the latest request, making excuses, asks why the failure keeps happening, or requests a conversation health check; triggers include “왜 같은 실수를 반복해?”, “또 틀렸잖아”, “세션이 길어지니까 형식을 못 맞추네”, “정상이냐?”, “드리프트냐?”, “왜 이래?”, “same mistake”, “long session”, and “are you drifting?”.
+description: |
+  Use when the agent keeps repeating a mistake, ignores a correction, retries the same failed tool call unchanged, violates an output format again, loses constraints in a long session, drifts from the latest request, or makes excuses instead of explaining a recurring failure.
+  Also use when the user asks why the same problem keeps happening, requests a conversation health check, asks whether compaction would help, or wonders whether a new session is needed.
+  Example requests include “왜 같은 실수를 반복해?”, “또 틀렸잖아”, “세션이 길어지니까 형식을 못 맞추네”, “정상이냐?”, “드리프트냐?”, “same mistake”, “are you drifting?”, and “should we start a new session?”.
 ---
 
 # AI Safe Driver

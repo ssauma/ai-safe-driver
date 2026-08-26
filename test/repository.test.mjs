@@ -78,6 +78,14 @@ test("defines an on-demand metaphorical dashboard and protects strict formats", 
   assert.match(skill, /At `75%` or `100%`, put the countersteering question/);
 });
 
+test("uses a real multiline discovery guide instead of the dashboard slogan", () => {
+  const skill = read(`${skillRoot}/SKILL.md`);
+  assert.match(skill, /^description: \|\n  Use when /m);
+  assert.doesNotMatch(skill, /^description: 정상운행중입니다\./m);
+  assert.match(skill, /repeating a mistake/);
+  assert.match(skill, /conversation health check/);
+});
+
 test("ships only a permission-gated SessionStart hook", () => {
   const hookConfig = json(`${pluginRoot}/hooks/hooks.json`);
   assert.deepEqual(Object.keys(hookConfig.hooks), ["SessionStart"]);
