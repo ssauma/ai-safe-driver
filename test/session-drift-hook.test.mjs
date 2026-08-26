@@ -31,7 +31,7 @@ const makeStateDir = (label = "state") => {
   return dir;
 };
 
-const runDriftHook = (stateDir, input) => spawnSync(
+const runDriftHook = (stateDir, input, extraEnv = {}) => spawnSync(
   process.execPath,
   [hookScript],
   {
@@ -40,6 +40,7 @@ const runDriftHook = (stateDir, input) => spawnSync(
       ...process.env,
       AI_SAFE_DRIVER_TEST_MODE: "1",
       AI_SAFE_DRIVER_STATE_DIR: stateDir,
+      ...extraEnv,
     },
     input: typeof input === "string" ? input : JSON.stringify(input),
   },
@@ -61,6 +62,9 @@ const runWithoutTestMode = (stateDir, input) => {
 const stateName = (sessionId) => `${createHash("sha256").update(sessionId).digest("hex").slice(0, 32)}.json`;
 const stateFile = (root, sessionId) => path.join(root, stateName(sessionId));
 const lockFile = (root, sessionId) => `${stateFile(root, sessionId)}.lock`;
+const reclaimerGuardFile = (root, sessionId, identity, epoch) => (
+  `${lockFile(root, sessionId)}.reclaim.${identity.dev}-${identity.ino}.${epoch}`
+);
 const readState = (root, sessionId) => JSON.parse(readFileSync(stateFile(root, sessionId), "utf8"));
 const mode = (file) => statSync(file).mode & 0o777;
 const assertSucceeded = (result) => assert.equal(result.status, 0, result.stderr);
@@ -545,18 +549,36 @@ test("a state file swapped to a symlink after validation is never read through",
   assert.equal(readFileSync(victim, "utf8"), victimSerialized);
 });
 
-test("two reclaimers that both reread one stale lock cannot unlink a successor or overlap callbacks", async () => {
-  const root = makeStateDir("stale-reread-race");
-  const firstBarrier = makeStateDir("stale-reread-first");
-  const secondBarrier = makeStateDir("stale-reread-second");
-  const sessionId = "session-stale-reread-race";
-  writeFileSync(lockFile(root, sessionId), JSON.stringify({
+test("two reclaimers ignore a crashed guard without deleting the current epoch successor", async () => {
+  const root = makeStateDir("stale-guard-recovery");
+  const firstBarrier = makeStateDir("stale-guard-first");
+  const secondBarrier = makeStateDir("stale-guard-second");
+  const sessionId = "session-stale-guard-recovery";
+  const now = 1_000_000;
+  const epochMs = 1_000;
+  const epoch = now / epochMs;
+  const extraEnv = {
+    AI_SAFE_DRIVER_TEST_NOW_MS: String(now),
+    AI_SAFE_DRIVER_TEST_RECLAIM_EPOCH_MS: String(epochMs),
+  };
+  const staleLock = lockFile(root, sessionId);
+  writeFileSync(staleLock, JSON.stringify({
     owner: "expired-hook",
-    leaseExpiresAt: Date.now() - 1,
+    leaseExpiresAt: now - 1,
+  }), { mode: 0o600 });
+  const identity = lstatSync(staleLock);
+  const crashedGuard = reclaimerGuardFile(root, sessionId, identity, epoch - 1);
+  writeFileSync(crashedGuard, JSON.stringify({
+    owner: "crashed-reclaimer",
+    leaseExpiresAt: now - 1,
+    lockDev: identity.dev,
+    lockIno: identity.ino,
+    epoch: epoch - 1,
   }), { mode: 0o600 });
   const first = startDriftHook(root, {
     hook_event_name: "UserPromptSubmit", session_id: sessionId, prompt: "안 했잖아.",
   }, {
+    ...extraEnv,
     AI_SAFE_DRIVER_TEST_BARRIER_DIR: firstBarrier,
     AI_SAFE_DRIVER_TEST_BARRIERS: "after-stale-lock-reread,before-lock-release",
   });
@@ -565,6 +587,7 @@ test("two reclaimers that both reread one stale lock cannot unlink a successor o
     hook_event_name: "UserPromptSubmit", session_id: sessionId,
     prompt: "You said you would fix it and still did not.",
   }, {
+    ...extraEnv,
     AI_SAFE_DRIVER_TEST_BARRIER_DIR: secondBarrier,
     AI_SAFE_DRIVER_TEST_BARRIERS: "after-stale-lock-reread",
   });
@@ -575,12 +598,50 @@ test("two reclaimers that both reread one stale lock cannot unlink a successor o
   assertNoOutput(await second.result);
   assert.equal(readState(root, sessionId).correctionCount, 1);
   assert.equal(lstatSync(lockFile(root, sessionId)).isFile(), true);
-  const successor = JSON.parse(readFileSync(lockFile(root, sessionId), "utf8"));
+  assert.equal(existsSync(crashedGuard), true);
+  const successorGuard = reclaimerGuardFile(root, sessionId, identity, epoch);
+  assert.equal(existsSync(successorGuard), true);
+  const successor = JSON.parse(readFileSync(successorGuard, "utf8"));
   assert.notEqual(successor.owner, "expired-hook");
-  assert.ok(successor.leaseExpiresAt > Date.now());
+  assert.ok(successor.leaseExpiresAt > now);
   releaseBarrier(firstBarrier, "before-lock-release");
   assertNoOutput(await first.result);
   assert.equal(existsSync(lockFile(root, sessionId)), false);
+  assert.equal(existsSync(successorGuard), false);
+  assert.equal(existsSync(crashedGuard), true);
+});
+
+test("an active adjacent-epoch reclaimer guard excludes a current-epoch contender", () => {
+  const root = makeStateDir("adjacent-epoch-guard");
+  const sessionId = "session-adjacent-epoch-guard";
+  const now = 2_000_000;
+  const epochMs = 1_000;
+  const epoch = now / epochMs;
+  const extraEnv = {
+    AI_SAFE_DRIVER_TEST_NOW_MS: String(now),
+    AI_SAFE_DRIVER_TEST_RECLAIM_EPOCH_MS: String(epochMs),
+  };
+  const staleLock = lockFile(root, sessionId);
+  writeFileSync(staleLock, JSON.stringify({
+    owner: "expired-hook",
+    leaseExpiresAt: now - 1,
+  }), { mode: 0o600 });
+  const identity = lstatSync(staleLock);
+  const activePreviousEpochGuard = reclaimerGuardFile(root, sessionId, identity, epoch - 1);
+  const activeGuard = {
+    owner: "previous-epoch-reclaimer",
+    leaseExpiresAt: now + epochMs,
+    lockDev: identity.dev,
+    lockIno: identity.ino,
+    epoch: epoch - 1,
+  };
+  writeFileSync(activePreviousEpochGuard, JSON.stringify(activeGuard), { mode: 0o600 });
+
+  assertNoOutput(runDriftHook(root, {
+    hook_event_name: "UserPromptSubmit", session_id: sessionId, prompt: "안 했잖아.",
+  }, extraEnv));
+  assert.equal(existsSync(stateFile(root, sessionId)), false);
+  assert.deepEqual(JSON.parse(readFileSync(activePreviousEpochGuard, "utf8")), activeGuard);
 });
 
 test("a malformed state for one session cannot suppress another session's recovery cycle", () => {
