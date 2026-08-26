@@ -44,6 +44,23 @@ test("recognizes native repeated-correction complaint shapes", () => {
   }
 });
 
+test("recognizes answered-question, fabricated-link, and stale-answer complaints", () => {
+  const cases = [
+    "I already answered that. Why are you asking the same question again?",
+    "The links you gave me do not exist. You made them up.",
+    "You just repeated an identical answer from earlier in this conversation.",
+    "我刚才已经回答过了，怎么又问同一个问题？",
+    "你给的链接根本不存在，又是你编的。",
+    "さっき答えましたよね。なぜまた同じ質問をするんですか？",
+    "あなたが出したリンクは存在しません。また作り話ですか？",
+  ];
+  for (const text of cases) {
+    const signals = classifyUserPrompt(text);
+    assert.equal(signals.correction, true, text);
+    assert.equal(signals.recurrence || signals.protest, true, text);
+  }
+});
+
 test("classifies assistant acknowledgment without treating it as a trigger", () => {
   for (const text of [
     "맞습니다. 요청한 항목을 넣지 않았습니다. 죄송합니다. 다시 고치겠습니다.",
@@ -90,12 +107,24 @@ test("does not confuse ordinary multilingual recurrence grammar with a complaint
     "我又加了一个字段。",
     "また同じ形式でお願いします。",
     "何回テストを実行しますか？",
+    "The format has not changed, as requested.",
+    "These legacy links no longer exist; create replacements.",
+    "这个旧链接不存在，请新建一个。",
+    "この古いリンクは存在しないので作り直してください。",
   ]) {
     const signals = classifyUserPrompt(text);
     assert.equal(signals.correction, false, text);
     assert.equal(signals.recurrence, false, text);
     assert.equal(signals.protest, false, text);
   }
+});
+
+test("a compliant unchanged-status message cannot seed repeated correction", () => {
+  const initial = createInitialState(1000);
+  const compliant = applyUserTurn(initial, classifyUserPrompt("The format has not changed, as requested."), 1100);
+  assert.equal(compliant.state.correctionCount, 0);
+  const actualCorrection = applyUserTurn(compliant.state, classifyUserPrompt("You said you fixed it, but it is still wrong."), 1200);
+  assert.equal(actualCorrection.inject, false);
 });
 
 test("recognizes additional correction shapes without using emotion as proof", () => {
