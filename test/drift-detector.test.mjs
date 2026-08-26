@@ -152,9 +152,46 @@ test("recognizes additional correction shapes without using emotion as proof", (
 });
 
 test("requires an explicit repeated-tool diagnosis request", () => {
-  assert.equal(classifyUserPrompt("같은 툴 호출이 또 실패했어. 원인을 점검해줘.").explicitToolDiagnosis, true);
+  for (const text of [
+    "같은 툴 호출이 또 실패했어. 원인을 점검해줘.",
+    "The same tool call failed again. Diagnose why.",
+    "同一个工具调用又失败了。请分析原因。",
+    "同一個工具調用又失敗了。請分析原因。",
+    "同じツール呼び出しがまた失敗しました。原因を診断してください。",
+  ]) assert.equal(classifyUserPrompt(text).explicitToolDiagnosis, true, text);
   assert.equal(classifyUserPrompt("툴이 실패했어.").explicitToolDiagnosis, false);
-  assert.equal(classifyUserPrompt("The same tool call failed again. Diagnose why.").explicitToolDiagnosis, true);
+});
+
+test("does not mistake observed-success negations for agent failure complaints", () => {
+  for (const text of [
+    "같은 툴 호출은 이번에 다시 실패하지 않았고 오류도 없었어.",
+    "The same tool call did not fail again; the error is resolved.",
+    "同一个工具调用这次没有再次失败，错误已经解决。",
+    "同一個工具調用這次沒有再次失敗，錯誤已經解決。",
+    "同じツール呼び出しは今回はまた失敗しませんでした。エラーは解消しました。",
+  ]) {
+    const signals = classifyUserPrompt(text);
+    assert.equal(signals.correction, false, text);
+    assert.equal(signals.recurrence, false, text);
+    assert.equal(signals.protest, false, text);
+    assert.equal(signals.explicitToolDiagnosis, false, text);
+  }
+});
+
+test("does not mistake prospective unit-test instructions for observed agent failures", () => {
+  for (const text of [
+    "같은 툴 호출이 또 실패하는 경우의 원인을 진단하는 단위 테스트를 작성해.",
+    "Write a unit test that diagnoses why the same tool call fails again.",
+    "请写一个单元测试，模拟同一个工具调用又失败并分析原因。",
+    "請寫一個單元測試，模擬同一個工具調用又失敗並分析原因。",
+    "同じツール呼び出しがまた失敗した場合の原因を診断する単体テストを書いてください。",
+  ]) {
+    const signals = classifyUserPrompt(text);
+    assert.equal(signals.correction, false, text);
+    assert.equal(signals.recurrence, false, text);
+    assert.equal(signals.protest, false, text);
+    assert.equal(signals.explicitToolDiagnosis, false, text);
+  }
 });
 
 test("reduces correction, acknowledgment, and recurrence into a recovery trigger", () => {
