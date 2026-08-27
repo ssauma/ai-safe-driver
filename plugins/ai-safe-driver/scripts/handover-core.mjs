@@ -411,16 +411,53 @@ export const writeExclusiveApproval = async ({
   }
 };
 
-export const unlinkSameFile = async ({ filePath, identity, lstatPath, unlinkPath }) => {
-  const current = await lstatPath(filePath);
-  if (
-    !current.isFile()
-    || current.isSymbolicLink()
-    || !sameIdentity(identity, current)
-  ) {
+const restoreClaimedApproval = async ({ armedPath, claimPath, linkFile, unlinkPath }) => {
+  try {
+    await linkFile(claimPath, armedPath);
+    await unlinkPath(claimPath);
+  } catch {
+    // A newer approval already owns the final name; the claimed file stays at
+    // its private claim name so no approval bytes are destroyed.
+  }
+};
+
+export const consumeApprovalExactly = async ({
+  armedPath,
+  claimPath,
+  identity,
+  expectedBytes,
+  maxBytes,
+  openFlags,
+  openFile,
+  lstatPath,
+  renameFile,
+  linkFile,
+  unlinkPath,
+}) => {
+  // A pathname check-then-unlink can delete an approval replaced after the
+  // check, and inode numbers can be reused immediately after unlink, so
+  // consumption first takes exclusive ownership of the shared name with an
+  // atomic rename, then verifies and removes only the claimed file.
+  await renameFile(armedPath, claimPath);
+  let claimed;
+  try {
+    claimed = await readBoundedRegularFile({
+      filePath: claimPath,
+      label: "approval",
+      maxBytes,
+      openFlags,
+      openFile,
+      lstatPath,
+    });
+  } catch (error) {
+    await restoreClaimedApproval({ armedPath, claimPath, linkFile, unlinkPath });
+    throw error;
+  }
+  if (!sameIdentity(identity, claimed.stat) || !claimed.bytes.equals(expectedBytes)) {
+    await restoreClaimedApproval({ armedPath, claimPath, linkFile, unlinkPath });
     throw new Error("approval file identity mismatch");
   }
-  await unlinkPath(filePath);
+  await unlinkPath(claimPath);
 };
 
 export const validateApproval = ({ approval, source, digest, now }) => {

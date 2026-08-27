@@ -9,6 +9,7 @@ import {
   MAX_HANDOVER_CONTEXT_BYTES,
   buildHandoverContext,
   buildApproval,
+  consumeApprovalExactly,
   deliverThenConsume,
   readAndValidateHandover,
   readBoundedRegularFile,
@@ -817,4 +818,89 @@ test("successful emission consumes approval afterward", async () => {
     consume: async () => { order.push("consume"); },
   });
   assert.deepEqual(order, ["emit", "consume"]);
+});
+
+const approvalBytes = (overrides = {}) => Buffer.from(`${JSON.stringify(validApproval(overrides))}\n`);
+const consumeClaimedApproval = ({ claimedBytes, claimedStat, linkFile, events }) => {
+  const file = fakeHandle({ content: claimedBytes, stat: claimedStat });
+  return consumeApprovalExactly({
+    armedPath: "armed.json",
+    claimPath: "armed.json.claim-1",
+    identity: { dev: 1, ino: 2 },
+    expectedBytes: approvalBytes(),
+    maxBytes: MAX_APPROVAL_BYTES,
+    openFlags: 0,
+    openFile: async () => file.handle,
+    lstatPath: async () => claimedStat,
+    renameFile: async (from, to) => { events.push(["rename", from, to]); },
+    linkFile: linkFile ?? (async (from, to) => { events.push(["link", from, to]); }),
+    unlinkPath: async (target) => { events.push(["unlink", target]); },
+  });
+};
+
+test("consumption removes exactly the approval it claimed and validated", async () => {
+  const events = [];
+  await consumeClaimedApproval({
+    claimedBytes: approvalBytes(),
+    claimedStat: regularStat(approvalBytes().length),
+    events,
+  });
+  assert.deepEqual(events, [
+    ["rename", "armed.json", "armed.json.claim-1"],
+    ["unlink", "armed.json.claim-1"],
+  ]);
+});
+
+test("a claimed approval observed with the same identity but different bytes is restored, not consumed", async () => {
+  const events = [];
+  const replacement = approvalBytes({ action: "clear" });
+  await assert.rejects(() => consumeClaimedApproval({
+    claimedBytes: replacement,
+    claimedStat: regularStat(replacement.length),
+    events,
+  }), { message: "approval file identity mismatch" });
+  assert.deepEqual(events, [
+    ["rename", "armed.json", "armed.json.claim-1"],
+    ["link", "armed.json.claim-1", "armed.json"],
+    ["unlink", "armed.json.claim-1"],
+  ]);
+});
+
+test("a newer approval created after the claim is never overwritten or deleted", async () => {
+  const events = [];
+  const replacement = approvalBytes({ action: "clear" });
+  await assert.rejects(() => consumeClaimedApproval({
+    claimedBytes: replacement,
+    claimedStat: regularStat(replacement.length),
+    linkFile: async (from, to) => {
+      events.push(["link", from, to]);
+      const error = new Error("file exists");
+      error.code = "EEXIST";
+      throw error;
+    },
+    events,
+  }), { message: "approval file identity mismatch" });
+  assert.deepEqual(events, [
+    ["rename", "armed.json", "armed.json.claim-1"],
+    ["link", "armed.json.claim-1", "armed.json"],
+  ]);
+});
+
+test("a claim that fails bounded reading is restored and the reader failure is preserved", async () => {
+  const events = [];
+  const symlinkStat = {
+    ...regularStat(approvalBytes().length),
+    isFile: () => false,
+    isSymbolicLink: () => true,
+  };
+  await assert.rejects(() => consumeClaimedApproval({
+    claimedBytes: approvalBytes(),
+    claimedStat: symlinkStat,
+    events,
+  }), { message: "approval is not a regular file" });
+  assert.deepEqual(events, [
+    ["rename", "armed.json", "armed.json.claim-1"],
+    ["link", "armed.json.claim-1", "armed.json"],
+    ["unlink", "armed.json.claim-1"],
+  ]);
 });

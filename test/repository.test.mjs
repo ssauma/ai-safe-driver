@@ -6,10 +6,10 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
-  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -842,6 +842,22 @@ const writeApprovalSync = (armedPath, approval) => {
   return bound;
 };
 
+// Some filesystems immediately reuse an unlinked inode number for the next
+// file created at the same path, so the original file is renamed aside to keep
+// its inode occupied while the replacement is created.
+const recreateOnDifferentInode = (filePath, contents) => {
+  const originalIno = statSync(filePath).ino;
+  const inodeHolder = `${filePath}.original-inode-holder`;
+  renameSync(filePath, inodeHolder);
+  try {
+    writeFileSync(filePath, contents, { mode: 0o600 });
+    chmodSync(filePath, 0o600);
+  } finally {
+    rmSync(inodeHolder, { force: true });
+  }
+  return originalIno;
+};
+
 const withState = (callback) => {
   const root = mkdtempSync(path.join(tmpdir(), "ai-safe-driver-"));
   const state = path.join(root, ".ai-safe-driver");
@@ -1047,9 +1063,8 @@ test("hook rejects approval inode replacement after arming", { skip: typeof proc
   writeFileSync(path.join(state, "handover.md"), handover);
   writeApprovalSync(armed, approvalFor(handover, "compact"));
   const copiedApproval = readFileSync(armed);
-  unlinkSync(armed);
-  writeFileSync(armed, copiedApproval, { mode: 0o600 });
-  chmodSync(armed, 0o600);
+  const originalIno = recreateOnDifferentInode(armed, copiedApproval);
+  assert.notEqual(statSync(armed).ino, originalIno);
 
   const result = runHook(root, "compact");
 
