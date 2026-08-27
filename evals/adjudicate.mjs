@@ -11,6 +11,7 @@ import {
   loadSuite,
   parseFlags,
   parseJsonl,
+  revalidateOutputForWrite,
   resolveInputPath,
   resolveOutputPath,
   suitePath,
@@ -63,8 +64,8 @@ async function main() {
     terminal.close();
   }
 
-  assertOutputDistinctFromInputs(output, protectedInputs);
-  writeJsonlAtomic(output, records);
+  const finalOutput = revalidateOutputForWrite(output, { allowPersistent: false, inputs: protectedInputs });
+  writeJsonlAtomic(finalOutput, records);
   process.stdout.write(`${records.length} attempts adjudicated\n`);
 }
 

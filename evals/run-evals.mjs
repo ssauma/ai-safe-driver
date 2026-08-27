@@ -8,6 +8,7 @@ import {
   assertOutputDistinctFromInputs,
   loadSuite,
   parseFlags,
+  revalidateOutputForWrite,
   resolveOutputPath,
   score,
   snapshotAdapterResult,
@@ -46,7 +47,8 @@ async function main() {
     if (!LOCALES.includes(locale)) throw new Error(`unknown locale: ${locale}`);
   }
 
-  const output = resolveOutputPath(options.out, { allowPersistent: options.allowPersistent === true });
+  const allowPersistent = options.allowPersistent === true;
+  const output = resolveOutputPath(options.out, { allowPersistent });
   const protectedInputs = [
     { path: suitePath, label: "canonical suite" },
     { path: adapterPath, label: "adapter module" },
@@ -92,8 +94,8 @@ async function main() {
       }
     }
   }
-  assertOutputDistinctFromInputs(output, protectedInputs);
-  writeJsonlAtomic(output, records);
+  const finalOutput = revalidateOutputForWrite(output, { allowPersistent, inputs: protectedInputs });
+  writeJsonlAtomic(finalOutput, records);
   process.stdout.write(`${records.length} attempts written\n`);
 }
 

@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   linkSync,
   readFileSync,
+  renameSync,
   symlinkSync,
   unlinkSync,
   writeFileSync,
@@ -336,6 +337,11 @@ test("events are bounded non-sensitive identifiers rather than arbitrary raw tex
     "harness.0123456789abcdef0123456789abcdef",
     "harness.a0123456789ab_cdef0123456789",
     "event_without_namespace",
+    "harness.sk_live_abcd_efgh",
+    "harness.ghp_abcd_efgh",
+    "harness.github_pat_abcd_efgh",
+    "harness.xoxb_abcd_efgh",
+    "harness.eyj_header_payload",
   ];
   for (const event of rejectedEvents) {
     const dir = area();
@@ -479,6 +485,64 @@ test("runner refuses output aliases of the adapter or canonical suite without ch
   assert.notEqual(suiteSymlinkResult.status, 0);
   assert.match(suiteSymlinkResult.stderr, /symlink|alias/iu);
   assert.deepEqual(readFileSync(path.join(root, "evals", "cases.json")), beforeSuite);
+});
+
+test("runner revalidates output containment after an adapter replaces its parent", () => {
+  const dir = area();
+  const outputParent = path.join(dir, "race-parent");
+  const displacedParent = path.join(dir, "race-parent-original");
+  const redirectedParent = path.join(dir, "redirected-parent");
+  mkdirSync(outputParent);
+  mkdirSync(redirectedParent);
+  const out = path.join(outputParent, "must-not-write.jsonl");
+  const redirectedOut = path.join(redirectedParent, path.basename(out));
+  const adapter = writeAdapter(dir, `import { renameSync, symlinkSync } from "node:fs";
+export async function run() {
+  renameSync(${JSON.stringify(outputParent)}, ${JSON.stringify(displacedParent)});
+  symlinkSync(${JSON.stringify(redirectedParent)}, ${JSON.stringify(outputParent)}, "dir");
+  return { response: "synthetic", events: ["harness.parent_swap"] };
+}\n`);
+  const result = runOne({ adapter, out });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /symlink|escape|contain/iu);
+  assert.equal(existsSync(redirectedOut), false);
+});
+
+test("shared final output revalidation reapplies adjudication containment and aliases", async () => {
+  const dir = area();
+  const outputParent = path.join(dir, "adjudication-parent");
+  const displacedParent = path.join(dir, "adjudication-parent-original");
+  const redirectedParent = path.join(dir, "adjudication-redirected");
+  mkdirSync(outputParent);
+  mkdirSync(redirectedParent);
+  const raw = path.join(dir, "raw-input.jsonl");
+  writeFileSync(raw, "synthetic input\n");
+  const { revalidateOutputForWrite, resolveOutputPath, suitePath } = await loadEvalLib();
+  const out = resolveOutputPath(path.join(outputParent, "result.jsonl"));
+  renameSync(outputParent, displacedParent);
+  symlinkSync(redirectedParent, outputParent, "dir");
+  assert.throws(() => revalidateOutputForWrite(out, {
+    allowPersistent: false,
+    inputs: [
+      { path: suitePath, label: "canonical suite" },
+      { path: raw, label: "raw eval" },
+    ],
+  }), /symlink|escape|contain/iu);
+  assert.equal(existsSync(path.join(redirectedParent, "result.jsonl")), false);
+});
+
+test("atomic JSONL collision cleanup preserves a temp file this writer did not create", async () => {
+  const dir = area();
+  const output = path.join(dir, "atomic-output.jsonl");
+  const collision = path.join(dir, ".occupied.tmp");
+  const sentinel = Buffer.from("pre-existing collision bytes\n");
+  writeFileSync(collision, sentinel);
+  const { writeJsonlAtomic } = await loadEvalLib();
+  assert.throws(() => writeJsonlAtomic(output, [{ safe: true }], {
+    makeTemporaryPath: () => collision,
+  }), /EEXIST|exist/iu);
+  assert.deepEqual(readFileSync(collision), sentinel);
+  assert.equal(existsSync(output), false);
 });
 
 test("adjudication core scores injected test selections without exposing them on the CLI", async () => {
@@ -651,4 +715,10 @@ test("localized Markdown views name cases.json as canonical and expose all 22 ca
     assert.match(content, /cases\.json/u, file);
     assert.equal([...content.matchAll(/^## \d+\./gmu)].length, 22, file);
   }
+});
+
+test("README adapter example uses an event label accepted by the runtime contract", () => {
+  const readme = readFileSync(path.join(root, "evals", "README.md"), "utf8");
+  assert.match(readme, /events:\s*\["harness\.observable_event"\]/u);
+  assert.doesNotMatch(readme, /events:\s*\["observable_event"\]/u);
 });

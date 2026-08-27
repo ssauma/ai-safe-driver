@@ -9,7 +9,7 @@ credentials or environment data.
 
 ```js
 export async function run({ caseId, locale, mode, turns }) {
-  return { response: "...", events: ["observable_event"], actions: ["observable_action"] };
+  return { response: "...", events: ["harness.observable_event"], actions: ["case_specific_action"] };
 }
 ```
 

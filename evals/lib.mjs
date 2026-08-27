@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import {
   closeSync,
   existsSync,
@@ -45,7 +46,8 @@ export const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const TURN_ROLES = new Set(["user", "assistant"]);
 const ACTION_LABEL = /^[a-z0-9]+(?:_[a-z0-9]+)*$/u;
 const EVENT_LABEL = /^(?:hook|tool|harness)[.:][a-z][a-z0-9]*(?:_[a-z0-9]+)*$/u;
-const SENSITIVE_EVENT = /(?:credential|password|passwd|secret|private_key|session_token|api_key|access_token|refresh_token|bearer|ssh)|^(?:sk|ghp|github_pat|xox[baprs]|eyj)[._:-]/u;
+const SENSITIVE_EVENT_TERM = /(?:credential|password|passwd|secret|private_key|session_token|api_key|access_token|refresh_token|bearer|ssh)/u;
+const CREDENTIAL_EVENT_PREFIX = /^(?:sk|ghp|github_pat|xox[baprs]|eyj)(?:_|$)/u;
 const HIGH_ENTROPY_EVENT = /(?:^|[._:-])[a-z0-9]{16,}(?:$|[._:-])/u;
 const ADAPTER_LABEL = /^[a-zA-Z0-9._-]{1,255}$/u;
 const MAX_ACTION_LABEL_LENGTH = 80;
@@ -214,7 +216,8 @@ export function validateEventLabels(events, label = "adapter events") {
     const credentialLikeEntropy = /^(?:[a-f0-9]{16,})$/u.test(compactPayload)
       || (payload.match(/\d/gu)?.length ?? 0) >= 8;
     return value.length === 0 || value.length > MAX_EVENT_LABEL_LENGTH
-      || !EVENT_LABEL.test(value) || SENSITIVE_EVENT.test(value)
+      || !EVENT_LABEL.test(value) || SENSITIVE_EVENT_TERM.test(value)
+      || CREDENTIAL_EVENT_PREFIX.test(payload)
       || HIGH_ENTROPY_EVENT.test(value) || credentialLikeEntropy;
   });
   if (unsafe !== undefined) throw new Error(`${label} contains an unsafe event identifier`);
@@ -284,6 +287,16 @@ export function assertOutputDistinctFromInputs(output, inputs) {
       throw new Error(`output may not alias the ${input.label} input`);
     }
   }
+}
+
+export function revalidateOutputForWrite(output, {
+  cwd = process.cwd(),
+  allowPersistent = false,
+  inputs = [],
+} = {}) {
+  const revalidated = resolveOutputPath(output, { cwd, allowPersistent });
+  assertOutputDistinctFromInputs(revalidated, inputs);
+  return revalidated;
 }
 
 function ensureNoSymlinkParents(base, parent) {
@@ -357,18 +370,35 @@ export function parseJsonl(file) {
   });
 }
 
-export function writeJsonlAtomic(file, records) {
-  const temporary = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.${Date.now()}.tmp`);
+function defaultTemporaryPath(file) {
+  return path.join(path.dirname(file), `.${path.basename(file)}.${randomBytes(16).toString("hex")}.tmp`);
+}
+
+export function writeJsonlAtomic(file, records, { makeTemporaryPath = defaultTemporaryPath } = {}) {
+  const destination = path.resolve(file);
+  const temporary = path.resolve(makeTemporaryPath(destination));
+  if (path.dirname(temporary) !== path.dirname(destination) || temporary === destination) {
+    throw new Error("temporary output must be a distinct file in the output directory");
+  }
   let descriptor;
+  let created = false;
   try {
     descriptor = openSync(temporary, "wx", 0o600);
+    created = true;
     writeFileSync(descriptor, records.map((record) => JSON.stringify(record)).join("\n") + (records.length ? "\n" : ""));
     closeSync(descriptor);
     descriptor = undefined;
-    renameSync(temporary, file);
+    renameSync(temporary, destination);
+    created = false;
   } catch (error) {
-    if (descriptor !== undefined) closeSync(descriptor);
-    if (existsSync(temporary)) unlinkSync(temporary);
+    if (descriptor !== undefined) {
+      try {
+        closeSync(descriptor);
+      } catch {
+        // Preserve the original write failure.
+      }
+    }
+    if (created && existsSync(temporary)) unlinkSync(temporary);
     throw error;
   }
 }
