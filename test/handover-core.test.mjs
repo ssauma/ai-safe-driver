@@ -3,9 +3,11 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 
 import {
+  MAX_APPROVAL_BYTES,
   MAX_HANDOVER_BYTES,
   buildApproval,
   deliverThenConsume,
+  readBoundedRegularFile,
   validateApproval,
   validateHandoverDocument,
 } from "../plugins/ai-safe-driver/scripts/handover-core.mjs";
@@ -26,6 +28,8 @@ const requiredHeadings = [
 
 const validHandover = requiredHeadings.map((heading) => `${heading}\nNot applicable\n`).join("");
 const regularStat = (size = Buffer.byteLength(validHandover)) => ({
+  dev: 1,
+  ino: 2,
   size,
   isFile: () => true,
   isSymbolicLink: () => false,
@@ -46,6 +50,116 @@ const validApproval = ({
 
 test("handover cap is six KiB for both host output limits", () => {
   assert.equal(MAX_HANDOVER_BYTES, 6 * 1024);
+});
+
+test("approval input cap is four KiB", () => {
+  assert.equal(MAX_APPROVAL_BYTES, 4 * 1024);
+});
+
+const fakeHandle = ({ content, stat, onRead = () => {} }) => {
+  let position = 0;
+  let closed = false;
+  return {
+    handle: {
+      stat: async () => stat,
+      read: async (target, offset, length) => {
+        onRead(length);
+        const bytesRead = content.copy(target, offset, position, position + length);
+        position += bytesRead;
+        return { bytesRead, buffer: target };
+      },
+      close: async () => { closed = true; },
+    },
+    isClosed: () => closed,
+  };
+};
+
+test("bounded reader rejects a replaced path before reading from the opened handle", async () => {
+  let readCalls = 0;
+  const opened = regularStat(4);
+  const file = fakeHandle({
+    content: Buffer.from("safe"),
+    stat: opened,
+    onRead: () => { readCalls += 1; },
+  });
+
+  await assert.rejects(() => readBoundedRegularFile({
+    filePath: "handover.md",
+    label: "handover",
+    maxBytes: MAX_HANDOVER_BYTES,
+    openFlags: 123,
+    openFile: async () => file.handle,
+    lstatPath: async () => ({ ...regularStat(4), ino: opened.ino + 1 }),
+  }), { message: "handover is not a regular file" });
+  assert.equal(readCalls, 0);
+  assert.equal(file.isClosed(), true);
+});
+
+test("no-follow fallback rejects replacement between pre-open and post-open identity checks", async () => {
+  let lstatCalls = 0;
+  let readCalls = 0;
+  const opened = regularStat(4);
+  const file = fakeHandle({
+    content: Buffer.from("safe"),
+    stat: opened,
+    onRead: () => { readCalls += 1; },
+  });
+
+  await assert.rejects(() => readBoundedRegularFile({
+    filePath: "handover.md",
+    label: "handover",
+    maxBytes: MAX_HANDOVER_BYTES,
+    openFlags: 0,
+    openFile: async () => file.handle,
+    lstatPath: async () => {
+      lstatCalls += 1;
+      return lstatCalls === 1 ? opened : { ...opened, ino: opened.ino + 1 };
+    },
+  }), { message: "handover is not a regular file" });
+  assert.equal(lstatCalls, 2);
+  assert.equal(readCalls, 0);
+  assert.equal(file.isClosed(), true);
+});
+
+test("bounded reader reads and closes the same verified handle", async () => {
+  const content = Buffer.from("approved");
+  const stat = regularStat(content.length);
+  const file = fakeHandle({ content, stat });
+  const opened = [];
+
+  const result = await readBoundedRegularFile({
+    filePath: "armed.json",
+    label: "approval",
+    maxBytes: MAX_APPROVAL_BYTES,
+    openFlags: 456,
+    openFile: async (...args) => {
+      opened.push(args);
+      return file.handle;
+    },
+    lstatPath: async () => stat,
+  });
+
+  assert.deepEqual(result, { bytes: content, stat });
+  assert.deepEqual(opened, [["armed.json", 456]]);
+  assert.equal(file.isClosed(), true);
+});
+
+test("bounded reader rejects the cap plus one byte even when the opened stat was stale", async () => {
+  const content = Buffer.alloc(MAX_APPROVAL_BYTES + 1, 0x20);
+  const stat = regularStat(MAX_APPROVAL_BYTES);
+  const readLengths = [];
+  const file = fakeHandle({ content, stat, onRead: (length) => readLengths.push(length) });
+
+  await assert.rejects(() => readBoundedRegularFile({
+    filePath: "armed.json",
+    label: "approval",
+    maxBytes: MAX_APPROVAL_BYTES,
+    openFlags: 456,
+    openFile: async () => file.handle,
+    lstatPath: async () => stat,
+  }), { message: "approval exceeds 4 KiB" });
+  assert.equal(readLengths.reduce((sum, length) => sum + length, 0) <= MAX_APPROVAL_BYTES + 1, true);
+  assert.equal(file.isClosed(), true);
 });
 
 test("handover document validation returns its verified digest", () => {

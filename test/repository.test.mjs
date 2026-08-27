@@ -563,9 +563,18 @@ test("defines an on-demand metaphorical dashboard and protects strict formats", 
 });
 
 test("documents the bounded handover and compact delivery contract", () => {
+  const policyDocuments = [
+    [`${skillRoot}/references/handover.md`, /no larger than 6 KiB/],
+    ["evals/cases.md", /exceeds 6 KiB/],
+    ["evals/cases.ko.md", /6 KiB를 초과/],
+  ];
+  for (const [filePath, sixKiBContract] of policyDocuments) {
+    const content = read(filePath);
+    assert.match(content, sixKiBContract, filePath);
+    assert.doesNotMatch(content, /64 KiB/, filePath);
+  }
+
   const handover = read(`${skillRoot}/references/handover.md`);
-  assert.match(handover, /no larger than 6 KiB/);
-  assert.doesNotMatch(handover, /64 KiB/);
   assert.match(handover, /next compact transition, whether the host triggers it manually or automatically/i);
   assert.match(handover, /never initiates `?\/compact`?/i);
   assert.match(handover, /does not acknowledge host or model receipt/i);
@@ -619,6 +628,16 @@ test("ships drift detection hooks and keeps handover permission gated", () => {
     const command = hookConfig.hooks[event][0].hooks[0].command;
     assert.doesNotMatch(command, /\/compact|\/clear/);
   }
+});
+
+test("handover hook uses the bounded no-follow reader for both state files", () => {
+  const source = read(`${pluginRoot}/scripts/reinject-handover.mjs`);
+  assert.match(source, /O_NOFOLLOW/);
+  assert.match(source, /O_NONBLOCK/);
+  assert.match(source, /readBoundedRegularFile/);
+  assert.doesNotMatch(source, /\breadFile\(/);
+  assert.match(source, /label: "handover"/);
+  assert.match(source, /label: "approval"/);
 });
 
 test("contains no installers, MCP, app, or network components", () => {
@@ -745,6 +764,28 @@ test("hook keeps approval when the stdout write callback reports failure", () =>
   const result = runHookWithFailedStdout(root, "compact");
   assert.equal(result.status, 0);
   assert.match(result.stderr, /broken pipe/);
+  assert.equal(existsSync(armed), true);
+}));
+
+test("hook accepts a four KiB approval and rejects one extra byte", () => withState(({ root, state }) => {
+  const handover = validHandover();
+  mkdirSync(state);
+  const armed = path.join(state, "armed.json");
+  writeFileSync(path.join(state, "handover.md"), handover);
+
+  const rawApproval = JSON.stringify(approvalFor(handover, "compact"));
+  const atCap = `${rawApproval}${" ".repeat(4 * 1024 - Buffer.byteLength(rawApproval))}`;
+  assert.equal(Buffer.byteLength(atCap), 4 * 1024);
+  writeFileSync(armed, atCap);
+  assert.notEqual(runHook(root, "compact").stdout, "");
+  assert.equal(existsSync(armed), false);
+
+  const oversized = `${rawApproval}${" ".repeat(4 * 1024 + 1 - Buffer.byteLength(rawApproval))}`;
+  assert.equal(Buffer.byteLength(oversized), 4 * 1024 + 1);
+  writeFileSync(armed, oversized);
+  const result = runHook(root, "compact");
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /approval exceeds 4 KiB/);
   assert.equal(existsSync(armed), true);
 }));
 

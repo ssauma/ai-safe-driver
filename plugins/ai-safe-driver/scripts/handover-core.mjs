@@ -1,6 +1,66 @@
 import { createHash } from "node:crypto";
 
 export const MAX_HANDOVER_BYTES = 6 * 1024;
+export const MAX_APPROVAL_BYTES = 4 * 1024;
+
+const capReason = (label, maxBytes) => `${label} exceeds ${maxBytes / 1024} KiB`;
+const regularFileReason = (label) => `${label} is not a regular file`;
+
+export const readBoundedRegularFile = async ({
+  filePath,
+  label,
+  maxBytes,
+  openFlags,
+  openFile,
+  lstatPath,
+}) => {
+  const preOpenStat = await lstatPath(filePath);
+  if (!preOpenStat.isFile() || preOpenStat.isSymbolicLink()) {
+    throw new Error(regularFileReason(label));
+  }
+
+  let handle;
+  try {
+    handle = await openFile(filePath, openFlags);
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ELOOP") {
+      throw new Error(regularFileReason(label));
+    }
+    throw error;
+  }
+
+  try {
+    const openedStat = await handle.stat();
+    const postOpenStat = await lstatPath(filePath);
+    if (
+      !openedStat.isFile()
+      || !postOpenStat.isFile()
+      || postOpenStat.isSymbolicLink()
+      || openedStat.dev !== preOpenStat.dev
+      || openedStat.ino !== preOpenStat.ino
+      || openedStat.dev !== postOpenStat.dev
+      || openedStat.ino !== postOpenStat.ino
+    ) {
+      throw new Error(regularFileReason(label));
+    }
+    if (openedStat.size > maxBytes) throw new Error(capReason(label, maxBytes));
+
+    const chunks = [];
+    let totalBytes = 0;
+    while (totalBytes <= maxBytes) {
+      const chunk = Buffer.allocUnsafe(Math.min(4096, maxBytes + 1 - totalBytes));
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, null);
+      if (bytesRead === 0) break;
+      chunks.push(chunk.subarray(0, bytesRead));
+      totalBytes += bytesRead;
+    }
+    if (totalBytes > maxBytes) throw new Error(capReason(label, maxBytes));
+
+    return { bytes: Buffer.concat(chunks, totalBytes), stat: openedStat };
+  } finally {
+    await handle.close();
+  }
+};
 
 const SCHEMA = "ai-safe-driver-handover-v1";
 const REQUIRED_HEADINGS = [

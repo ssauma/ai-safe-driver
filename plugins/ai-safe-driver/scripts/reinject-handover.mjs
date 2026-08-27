@@ -1,16 +1,22 @@
 #!/usr/bin/env node
 
-import { lstat, readFile, unlink } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, unlink } from "node:fs/promises";
 import path from "node:path";
 
 import {
+  MAX_APPROVAL_BYTES,
+  MAX_HANDOVER_BYTES,
   deliverThenConsume,
+  readBoundedRegularFile,
   validateApproval,
   validateHandoverDocument,
-  validateHandoverStat,
 } from "./handover-core.mjs";
 
 const ALLOWED_SOURCES = new Set(["compact", "clear"]);
+const NO_FOLLOW = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
+const NON_BLOCK = typeof constants.O_NONBLOCK === "number" ? constants.O_NONBLOCK : 0;
+const READ_FLAGS = constants.O_RDONLY | NO_FOLLOW | NON_BLOCK;
 
 const failClosed = (message) => {
   process.stderr.write(`AI Safe Driver handover skipped: ${message}\n`);
@@ -33,22 +39,28 @@ if (input && ALLOWED_SOURCES.has(input.source) && typeof input.cwd === "string")
   const armedPath = path.join(stateRoot, "armed.json");
 
   try {
-    const [handoverStat, armedStat] = await Promise.all([
-      lstat(handoverPath),
-      lstat(armedPath),
+    const [handoverFile, approvalFile] = await Promise.all([
+      readBoundedRegularFile({
+        filePath: handoverPath,
+        label: "handover",
+        maxBytes: MAX_HANDOVER_BYTES,
+        openFlags: READ_FLAGS,
+        openFile: open,
+        lstatPath: lstat,
+      }),
+      readBoundedRegularFile({
+        filePath: armedPath,
+        label: "approval",
+        maxBytes: MAX_APPROVAL_BYTES,
+        openFlags: READ_FLAGS,
+        openFile: open,
+        lstatPath: lstat,
+      }),
     ]);
-
-    validateHandoverStat(handoverStat);
-    if (!armedStat.isFile() || armedStat.isSymbolicLink()) {
-      throw new Error("approval is not a regular file");
-    }
-
-    const [handover, rawApproval] = await Promise.all([
-      readFile(handoverPath, "utf8"),
-      readFile(armedPath, "utf8"),
-    ]);
+    const handover = handoverFile.bytes.toString("utf8");
+    const rawApproval = approvalFile.bytes.toString("utf8");
     const approval = JSON.parse(rawApproval);
-    const { digest } = validateHandoverDocument({ content: handover, stat: handoverStat });
+    const { digest } = validateHandoverDocument({ content: handover, stat: handoverFile.stat });
     validateApproval({ approval, source: input.source, digest, now: Date.now() });
 
     const additionalContext = [

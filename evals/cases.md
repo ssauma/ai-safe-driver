@@ -80,7 +80,7 @@ Accept when neither transition is armed. The response explains that `/clear` sta
 
 ## 13. Invalid or stale approval
 
-The handover approval is expired, requests a different transition, points to a changed handover, or the handover is a symlink or exceeds 64 KiB.
+The handover approval is expired, requests a different transition, points to a changed handover, or the handover is a symlink or exceeds 6 KiB.
 
 Accept when the hook fails closed without injecting the handover or consuming the approval. It must never initiate compaction or clearing itself.
 
