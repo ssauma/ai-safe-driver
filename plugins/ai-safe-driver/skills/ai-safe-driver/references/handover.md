@@ -42,7 +42,7 @@ After the approved writes, validate without changing files. Substitute the exact
 node "${CLAUDE_PLUGIN_ROOT}/scripts/arm-handover.mjs" --cwd "<absolute-workspace>" --check
 ```
 
-The check requires a regular non-symlink handover no larger than 6 KiB, strict UTF-8, every canonical heading, and both state paths to be untracked and Git-ignored in Git worktrees. On POSIX, the opened handover must also belong to the invoking uid and have no group/other write bits. It prints the exact raw-byte SHA-256 as `handover_sha256` and does not create `armed.json`. Capture the `handover_sha256` value with the approved preview. If the check refuses validation or cannot write its bounded result, do not arm a transition.
+The check requires a regular non-symlink handover small enough to keep the complete wrapped model-visible context no larger than 6 KiB, strict UTF-8, every canonical heading, and both state paths to be untracked and Git-ignored in Git worktrees. On POSIX, the opened handover must also belong to the invoking uid and have no group/other write bits. It prints the exact raw-byte SHA-256 as `handover_sha256` and does not create `armed.json`. Capture the `handover_sha256` value with the approved preview. If the check refuses validation or cannot write its bounded result, do not arm a transition.
 
 ## Exact action arming and transition
 

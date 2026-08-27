@@ -18,6 +18,11 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 
+import {
+  MAX_HANDOVER_BYTES,
+  MAX_HANDOVER_CONTEXT_BYTES,
+} from "../plugins/ai-safe-driver/scripts/handover-core.mjs";
+
 const name = "ai-safe-driver";
 const pluginRoot = `plugins/${name}`;
 const skillRoot = `${pluginRoot}/skills/${name}`;
@@ -613,7 +618,7 @@ test("documents deterministic handover checking and two separate mutation approv
 
 test("documents the bounded handover and compact delivery contract", () => {
   const policyDocuments = [
-    [`${skillRoot}/references/handover.md`, /no larger than 6 KiB/],
+    [`${skillRoot}/references/handover.md`, /complete wrapped model-visible context no larger than 6 KiB/],
     ["evals/cases.md", /exceeds 6 KiB/],
     ["evals/cases.ko.md", /6 KiB를 초과/],
   ];
@@ -739,13 +744,13 @@ const runHook = (cwd, source) => spawnSync(
   },
 );
 
-const runHookWithFailedStdout = (cwd, source) => spawnSync(
+const runHookWithFailedStdout = (cwd, source, message = "broken pipe") => spawnSync(
   process.execPath,
   [
     "--input-type=module",
     "--eval",
     `process.stdout.write = (_payload, _encoding, callback) => {
-      callback(new Error("broken pipe"));
+      callback(new Error(${JSON.stringify(message)}));
       return false;
     };
     await import(${JSON.stringify(pathToFileURL(hookScript).href)});`,
@@ -756,6 +761,16 @@ const runHookWithFailedStdout = (cwd, source) => spawnSync(
     input: JSON.stringify({ source, cwd, hook_event_name: "SessionStart" }),
   },
 );
+
+const HOOK_FAILURE_NOTICE = "AI Safe Driver handover skipped: operation-failed\n";
+const assertBoundedHookFailure = (result, forbidden = []) => {
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr, HOOK_FAILURE_NOTICE);
+  assert.equal(Buffer.byteLength(result.stderr, "utf8") <= 512, true);
+  assert.match(result.stderr, /^[\x20-\x7e]+\n$/u);
+  for (const value of forbidden) assert.equal(result.stderr.includes(value), false, value);
+};
 
 const approvalFor = (handover, action, overrides = {}) => {
   const createdAt = new Date();
@@ -819,16 +834,17 @@ test("hook loads a matching handover once and keeps the handover", () => withSta
   assert.equal(second.stdout, "");
 }));
 
-test("hook keeps approval when the stdout write callback reports failure", () => withState(({ root, state }) => {
+test("hook keeps approval and emits a fixed bounded notice when stdout reports hostile failure text", () => withState(({ root, state }) => {
   const handover = validHandover();
   mkdirSync(state);
   const armed = path.join(state, "armed.json");
   writeFileSync(path.join(state, "handover.md"), handover);
   writeApprovalSync(armed, approvalFor(handover, "compact"));
 
-  const result = runHookWithFailedStdout(root, "compact");
-  assert.equal(result.status, 0);
-  assert.match(result.stderr, /broken pipe/);
+  const sentinelPath = path.join(root, "sentinel-secret.txt");
+  const hostileMessage = `${sentinelPath}\nsecond line\u0000검증${"x".repeat(2048)}`;
+  const result = runHookWithFailedStdout(root, "compact", hostileMessage);
+  assertBoundedHookFailure(result, [sentinelPath, "second line", "검증", "xxx"]);
   assert.equal(existsSync(armed), true);
 }));
 
@@ -850,8 +866,7 @@ test("hook accepts a four KiB approval and rejects one extra byte", () => withSt
   assert.equal(Buffer.byteLength(oversizedBound), 4 * 1024 + 1);
   writeFileSync(armed, oversizedBound);
   const result = runHook(root, "compact");
-  assert.equal(result.stdout, "");
-  assert.match(result.stderr, /approval exceeds 4 KiB/);
+  assertBoundedHookFailure(result, [armed, "approval exceeds 4 KiB"]);
   assert.equal(existsSync(armed), true);
 }));
 
@@ -912,28 +927,30 @@ test("hook rejects a non-file handover before reading it", () => withState(({ ro
   writeApprovalSync(armed, approvalFor(validHandover(), "compact"));
 
   const result = runHook(root, "compact");
-  assert.equal(result.stdout, "");
-  assert.match(result.stderr, /handover is not a regular file/);
+  assertBoundedHookFailure(result, [handoverPath, "handover is not a regular file"]);
   assert.equal(existsSync(armed), true);
 }));
 
-test("hook accepts a valid handover below six KiB and rejects one byte over", () => withState(({ root, state }) => {
+test("hook emits an exact six KiB model-visible context and rejects a document one byte over its allowance", () => withState(({ root, state }) => {
   mkdirSync(state);
   const handoverPath = path.join(state, "handover.md");
   const armed = path.join(state, "armed.json");
   const base = validHandover();
-  const belowCap = `${base}${"x".repeat(6 * 1024 - 1 - Buffer.byteLength(base))}`;
-  assert.equal(Buffer.byteLength(belowCap), 6 * 1024 - 1);
-  writeFileSync(handoverPath, belowCap);
-  writeApprovalSync(armed, approvalFor(belowCap, "compact"));
-  assert.notEqual(runHook(root, "compact").stdout, "");
+  const atAllowance = `${base}${"x".repeat(MAX_HANDOVER_BYTES - Buffer.byteLength(base))}`;
+  assert.equal(Buffer.byteLength(atAllowance), MAX_HANDOVER_BYTES);
+  writeFileSync(handoverPath, atAllowance);
+  writeApprovalSync(armed, approvalFor(atAllowance, "compact"));
+  const accepted = runHook(root, "compact");
+  assert.equal(accepted.status, 0);
+  const context = JSON.parse(accepted.stdout).hookSpecificOutput.additionalContext;
+  assert.equal(Buffer.byteLength(context, "utf8"), MAX_HANDOVER_CONTEXT_BYTES);
   assert.equal(existsSync(armed), false);
 
-  const oversized = `${base}${"x".repeat(6 * 1024 + 1 - Buffer.byteLength(base))}`;
-  assert.equal(Buffer.byteLength(oversized), 6 * 1024 + 1);
+  const oversized = `${atAllowance}x`;
+  assert.equal(Buffer.byteLength(oversized), MAX_HANDOVER_BYTES + 1);
   writeFileSync(handoverPath, oversized);
   writeApprovalSync(armed, approvalFor(oversized, "compact"));
-  assert.equal(runHook(root, "compact").stdout, "");
+  assertBoundedHookFailure(runHook(root, "compact"), [handoverPath, "model-visible context allowance"]);
   assert.equal(existsSync(armed), true);
 }));
 
@@ -961,8 +978,7 @@ test("hook rejects approval inode replacement after arming", { skip: typeof proc
 
   const result = runHook(root, "compact");
 
-  assert.equal(result.stdout, "");
-  assert.match(result.stderr, /approval file identity mismatch/i);
+  assertBoundedHookFailure(result, [armed, "approval file identity mismatch"]);
   assert.equal(existsSync(armed), true);
 }));
 
@@ -975,8 +991,7 @@ test("hook rejects unsafe state-directory and approval modes on POSIX", { skip: 
     writeApprovalSync(armed, approvalFor(handover, "compact"));
     chmodSync(state, 0o777);
     const result = runHook(root, "compact");
-    assert.equal(result.stdout, "");
-    assert.match(result.stderr, /handover directory has unsafe permissions/i);
+    assertBoundedHookFailure(result, [state, "handover directory has unsafe permissions"]);
   });
 
   withState(({ root, state }) => {
@@ -987,8 +1002,7 @@ test("hook rejects unsafe state-directory and approval modes on POSIX", { skip: 
     writeApprovalSync(armed, approvalFor(handover, "compact"));
     chmodSync(armed, 0o644);
     const result = runHook(root, "compact");
-    assert.equal(result.stdout, "");
-    assert.match(result.stderr, /approval has unsafe permissions/i);
+    assertBoundedHookFailure(result, [armed, "approval has unsafe permissions"]);
   });
 
   withState(({ root, state }) => {
@@ -1000,8 +1014,7 @@ test("hook rejects unsafe state-directory and approval modes on POSIX", { skip: 
     chmodSync(handoverPath, 0o620);
     writeApprovalSync(armed, approvalFor(handover, "compact"));
     const result = runHook(root, "compact");
-    assert.equal(result.stdout, "");
-    assert.match(result.stderr, /handover has unsafe permissions/i);
+    assertBoundedHookFailure(result, [handoverPath, "handover has unsafe permissions"]);
     assert.equal(existsSync(armed), true);
   });
 });
@@ -1015,7 +1028,6 @@ test("hook rejects malformed UTF-8 handover bytes using their exact raw digest",
 
   const result = runHook(root, "compact");
 
-  assert.equal(result.stdout, "");
-  assert.match(result.stderr, /handover is not valid UTF-8/i);
+  assertBoundedHookFailure(result, [path.join(state, "handover.md"), "handover is not valid UTF-8"]);
   assert.equal(existsSync(armed), true);
 }));

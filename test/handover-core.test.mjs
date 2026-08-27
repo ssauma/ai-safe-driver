@@ -3,8 +3,11 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 
 import {
+  HANDOVER_CONTEXT_OVERHEAD_BYTES,
   MAX_APPROVAL_BYTES,
   MAX_HANDOVER_BYTES,
+  MAX_HANDOVER_CONTEXT_BYTES,
+  buildHandoverContext,
   buildApproval,
   deliverThenConsume,
   readAndValidateHandover,
@@ -31,6 +34,12 @@ const requiredHeadings = [
 ];
 
 const validHandover = requiredHeadings.map((heading) => `${heading}\nNot applicable\n`).join("");
+const padDocumentToBytes = (content, targetBytes, { multibyte = false } = {}) => {
+  const remaining = targetBytes - Buffer.byteLength(content, "utf8");
+  assert.ok(remaining >= 0);
+  if (!multibyte) return `${content}${"x".repeat(remaining)}`;
+  return `${content}${"한".repeat(Math.floor(remaining / 3))}${"x".repeat(remaining % 3)}`;
+};
 const regularStat = (size = Buffer.byteLength(validHandover)) => ({
   dev: 1,
   ino: 2,
@@ -64,8 +73,29 @@ const validApproval = ({
   handover_sha256: digest,
 });
 
-test("handover cap is six KiB for both host output limits", () => {
-  assert.equal(MAX_HANDOVER_BYTES, 6 * 1024);
+test("handover allowance reserves the exact fixed wrapper overhead", () => {
+  assert.equal(MAX_HANDOVER_CONTEXT_BYTES, 6 * 1024);
+  assert.equal(MAX_HANDOVER_BYTES + HANDOVER_CONTEXT_OVERHEAD_BYTES, MAX_HANDOVER_CONTEXT_BYTES);
+  assert.equal(Buffer.byteLength(buildHandoverContext(""), "utf8"), HANDOVER_CONTEXT_OVERHEAD_BYTES);
+});
+
+test("final model-visible handover context enforces ASCII and multibyte byte boundaries", () => {
+  for (const multibyte of [false, true]) {
+    const exact = padDocumentToBytes(validHandover, MAX_HANDOVER_BYTES, { multibyte });
+    assert.equal(Buffer.byteLength(exact, "utf8"), MAX_HANDOVER_BYTES);
+    assert.doesNotThrow(() => validateHandoverDocument({ content: exact, stat: regularStat(MAX_HANDOVER_BYTES) }));
+
+    const context = buildHandoverContext(exact);
+    assert.equal(Buffer.byteLength(context, "utf8"), MAX_HANDOVER_CONTEXT_BYTES);
+    assert.throws(
+      () => buildHandoverContext(`${exact}x`),
+      { message: "handover exceeds model-visible context allowance" },
+    );
+    assert.throws(
+      () => validateHandoverDocument({ content: `${exact}x`, stat: regularStat(MAX_HANDOVER_BYTES + 1) }),
+      { message: "handover exceeds model-visible context allowance" },
+    );
+  }
 });
 
 test("approval input cap is four KiB", () => {
@@ -359,7 +389,7 @@ test("handover document validation preserves regular-file, size, and heading fai
   );
   assert.throws(
     () => validateHandoverDocument({ content: validHandover, stat: regularStat(MAX_HANDOVER_BYTES + 1) }),
-    { message: "handover exceeds 6 KiB" },
+    { message: "handover exceeds model-visible context allowance" },
   );
   assert.throws(
     () => validateHandoverDocument({
