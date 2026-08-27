@@ -46,9 +46,11 @@ codex plugin marketplace add ssauma/ai-safe-driver
 codex plugin add ai-safe-driver@ai-safe-driver
 ```
 
-Start a new Codex session and run `$ai-safe-driver`. You can also describe the repeated failure in your own words.
+Run `$ai-safe-driver` directly. You can also describe the repeated failure in your own words. In a fresh session, include a short description of the repeated failure or provide an approved handover; the skill cannot inspect an invisible prior conversation.
 
 ## Automatic recovery hooks
+
+Automatic hooks require Node.js 20 or later.
 
 The recovery hooks look for a narrow, observable sequence: a correction, an assistant acknowledgment or repair promise, and a recurring complaint. They may also respond to an explicit conversation-health check or an explicit request to diagnose repeated tool failures. A raw tool error is not enough. Capitalization, profanity, punctuation, repeated characters, and frustration do not raise the label by themselves.
 

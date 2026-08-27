@@ -56,6 +56,61 @@ test("keeps identity, source paths, and versions aligned", () => {
   assert.match(read("CONTRIBUTING.ko.md"), /버전 `0\.3\.0`/);
 });
 
+test("documents the supported hook runtime and fresh-session boundary in every locale", () => {
+  const contracts = [
+    [
+      "README.md",
+      "Automatic hooks require Node.js 20 or later.",
+      "In a fresh session, include a short description of the repeated failure or provide an approved handover; the skill cannot inspect an invisible prior conversation.",
+    ],
+    [
+      "README.ko.md",
+      "자동 훅을 사용하려면 Node.js 20 이상이 필요합니다.",
+      "새 세션에서는 반복된 실패를 짧게 설명하거나 승인된 핸드오버를 제공해야 합니다. 이 스킬은 보이지 않는 이전 대화를 읽을 수 없습니다.",
+    ],
+    [
+      "README.zh-CN.md",
+      "自动钩子需要 Node.js 20 或更高版本。",
+      "在新会话中，请简要说明反复发生的失败或提供已批准的交接文件；此技能无法读取不可见的先前对话。",
+    ],
+    [
+      "README.zh-TW.md",
+      "自動鉤子需要 Node.js 20 或更新版本。",
+      "在新的工作階段中，請簡述反覆發生的失敗或提供已核准的交接檔案；此技能無法讀取不可見的先前對話。",
+    ],
+    [
+      "README.ja.md",
+      "自動フックには Node.js 20 以降が必要です。",
+      "新しいセッションでは、繰り返した失敗を短く説明するか、承認済みのハンドオーバーを渡してください。このスキルは見えない以前の会話を読むことはできません。",
+    ],
+  ];
+
+  for (const [filePath, runtimeLine, freshSessionLine] of contracts) {
+    const content = read(filePath);
+    assert.equal(content.includes(runtimeLine), true, `${filePath} is missing its Node.js 20 hook requirement`);
+    assert.equal(content.includes(freshSessionLine), true, `${filePath} is missing its fresh-session boundary`);
+  }
+});
+
+test("ships Node 20 and 22 CI jobs that run the repository tests", () => {
+  const workflowPath = ".github/workflows/test.yml";
+  assert.equal(existsSync(workflowPath), true, `missing ${workflowPath}`);
+  const workflow = read(workflowPath);
+  assert.match(workflow, /node:\s*\[20, 22\]/);
+  assert.match(workflow, /npm test/);
+});
+
+test("aligns the package version and direct-invocation prompt", () => {
+  assert.equal(json("package.json").version, "0.3.0");
+  assert.equal(
+    read(`${skillRoot}/agents/openai.yaml`).includes(
+      "Use $ai-safe-driver to diagnose the repeated failure described in this prompt or visible conversation. If no evidence is available, ask for the goal, repeated result, latest correction, and output contract; never invent prior-session context.",
+    ),
+    true,
+    "openai.yaml is missing its direct-invocation evidence boundary",
+  );
+});
+
 test("explains direct and hook-triggered recovery truthfully in English", () => {
   const content = read("README.md");
   assertMatchesAll(content, [

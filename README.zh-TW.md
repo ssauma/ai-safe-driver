@@ -46,9 +46,11 @@ codex plugin marketplace add ssauma/ai-safe-driver
 codex plugin add ai-safe-driver@ai-safe-driver
 ```
 
-開啟新的 Codex 工作階段後執行 `$ai-safe-driver`。也可以用自己的話描述反覆發生的問題。
+可以直接執行 `$ai-safe-driver`。也可以用自己的話描述反覆發生的問題。在新的工作階段中，請簡述反覆發生的失敗或提供已核准的交接檔案；此技能無法讀取不可見的先前對話。
 
 ## 自動復原 Hook
+
+自動鉤子需要 Node.js 20 或更新版本。
 
 復原 Hook 只檢查範圍很窄、可以直接觀察的順序：使用者提出修正，AI 代理程式承認錯誤或承諾修復，之後同類抱怨再次出現。明確的對話健康檢查，或明確要求診斷反覆失敗的工具呼叫，也能喚醒技能。單次原始工具錯誤還不夠。大寫、髒話、標點、重複字元和憤怒語氣本身都不會提高等級。
 

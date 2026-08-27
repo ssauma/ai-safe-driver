@@ -1,4 +1,4 @@
 interface:
   display_name: "AI Safe Driver"
   short_description: "Recover from repeated failures and drift"
-  default_prompt: "Use $ai-safe-driver to diagnose this repeated failure and recover without making excuses."
+  default_prompt: "Use $ai-safe-driver to diagnose the repeated failure described in this prompt or visible conversation. If no evidence is available, ask for the goal, repeated result, latest correction, and output contract; never invent prior-session context."
