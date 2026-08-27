@@ -31,7 +31,7 @@ const ITEM_EVENTS = new Map([
   ["collab_tool_call", "tool.codex_collab_call"],
   ["error", "harness.codex_item_error"],
 ]);
-const TERMINAL_ONLY_ITEM_TYPES = new Set(["agent_message", "reasoning", "error"]);
+const TERMINAL_ONLY_ITEM_TYPES = new Set(["agent_message", "reasoning", "file_change", "error"]);
 const UNSUPPORTED_PROVIDER_VARIABLES = [
   "OPENAI_API_KEY",
   "OPENAI_BASE_URL",

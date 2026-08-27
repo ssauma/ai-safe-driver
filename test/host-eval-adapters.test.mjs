@@ -69,6 +69,8 @@ function claudeSuccess(result = "answer", overrides = {}) {
       cache_creation_input_tokens: 0,
       cache_read_input_tokens: 0,
       cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 },
+      fallback_credit: { status: { type: "redeemed" } },
+      output_tokens_details: { thinking_tokens: 0 },
       server_tool_use: { web_search_requests: 0, web_fetch_requests: 0 },
       service_tier: "standard",
       speed: "standard",
@@ -90,6 +92,69 @@ function claudeSuccess(result = "answer", overrides = {}) {
     permission_denials: [],
     ...overrides,
   };
+}
+
+function enrichedClaudeSuccess(result = "enriched answer") {
+  const longModelName = `gateway-model-${"x".repeat(160)}`;
+  const iteration = (type, model) => ({
+    type,
+    input_tokens: 1,
+    output_tokens: 1,
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: 0,
+    cache_creation: null,
+    ...(model === undefined ? {} : { model }),
+  });
+  return claudeSuccess(result, {
+    api_error_status: null,
+    ttft_ms: 10,
+    ttft_stream_ms: 9,
+    time_to_request_ms: 2,
+    user_message_uuid: "20000000-0000-4000-8000-000000000000",
+    request_sent_wall_ms: 7,
+    time_to_request_from_spawn_ms: 3,
+    warm_spare_claimed: true,
+    time_origin_ms: 1,
+    queued_turn_count: 0,
+    structured_output: { result: true },
+    deferred_tool_use: { id: "tool-1", name: "Bash", input: { command: "true" } },
+    terminal_reason: "tool_deferred",
+    fast_mode_state: "cooldown",
+    fast_mode_disabled_reason: "pending",
+    origin: {
+      kind: "peer",
+      from: "session-1",
+      fromMode: "prompting",
+      name: "peer",
+      fromSession: "session-1",
+      senderTaskId: "task-1",
+      body: "message",
+      verifiedPeerPid: 42,
+    },
+    usage: {
+      ...claudeSuccess().usage,
+      fallback_credit: {
+        status: { type: "not_applied", reason: "variant_fields_present", remove_to_redeem: ["speed"] },
+      },
+      service_tier: "priority",
+      speed: "fast",
+      iterations: [
+        iteration("message", "claude-sonnet-4-6"),
+        iteration("compaction"),
+        iteration("advisor_message", "claude-haiku-4-5"),
+        iteration("fallback_message", "claude-opus-4-6"),
+      ],
+    },
+    modelUsage: {
+      [longModelName]: {
+        ...claudeSuccess().modelUsage["claude-sonnet-4-6"],
+        canonicalModel: "claude-sonnet-4-6",
+        provider: "gateway",
+        costBasis: "managed",
+      },
+    },
+    future_optional_field: { ignored: true },
+  });
 }
 
 function provisionCodexSkillProfile(profile) {
@@ -359,18 +424,44 @@ enabled = false
 });
 
 test("documented Claude JSON and Codex JSONL response shapes parse to safe observations", () => {
-  assert.deepEqual(parseClaudeOutput(JSON.stringify(claudeSuccess("answer", {
-    api_error_status: null,
-    origin: { kind: "human" },
-    user_message_uuid: "20000000-0000-4000-8000-000000000000",
-    request_sent_wall_ms: 7,
-    fast_mode_state: "off",
-    fast_mode_disabled_reason: "sdk_opt_in_required",
-    future_optional_field: { ignored: true },
-  }))), {
-    response: "answer",
+  assert.deepEqual(parseClaudeOutput(JSON.stringify(claudeSuccess("minimal answer"))), {
+    response: "minimal answer",
     events: [],
   });
+  assert.deepEqual(parseClaudeOutput(JSON.stringify(enrichedClaudeSuccess())), {
+    response: "enriched answer",
+    events: [],
+  });
+  assert.deepEqual(parseClaudeOutput(JSON.stringify(claudeSuccess("empty model usage", { modelUsage: {} }))), {
+    response: "empty model usage",
+    events: [],
+  });
+
+  const primary = parseCodexOutput([
+    JSON.stringify({ type: "thread.started", thread_id: "opaque" }),
+    JSON.stringify({ type: "turn.started" }),
+    JSON.stringify({ type: "item.completed", item: {
+      id: "patch-1",
+      type: "file_change",
+      changes: [{ path: "fixture.txt", kind: "update" }],
+      status: "completed",
+    } }),
+    JSON.stringify({ type: "item.completed", item: { id: "message-1", type: "agent_message", text: "intermediate" } }),
+    JSON.stringify({ type: "item.completed", item: { id: "message-2", type: "agent_message", text: "answer" } }),
+    JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } }),
+  ].join("\n"));
+  assert.deepEqual(primary, {
+    response: "answer",
+    events: [
+      "harness.codex_thread_started",
+      "harness.codex_turn_started",
+      "tool.codex_file_change",
+      "harness.codex_agent_message",
+      "harness.codex_agent_message",
+      "harness.codex_turn_completed",
+    ],
+  });
+
   const parsed = parseCodexOutput([
     JSON.stringify({ type: "thread.started", thread_id: "opaque" }),
     JSON.stringify({ type: "turn.started" }),
@@ -399,11 +490,18 @@ test("documented Claude JSON and Codex JSONL response shapes parse to safe obser
 test("parsers reject malformed, unexpected, failed, and missing-response records", () => {
   assert.throws(() => parseClaudeOutput("not json"), /malformed/iu);
   assert.throws(() => parseClaudeOutput(JSON.stringify({ type: "other", result: "answer" })), /unexpected/iu);
-  for (const value of [undefined, "false", null, true]) {
+  for (const value of [undefined, "false", null]) {
     const record = claudeSuccess("answer", { is_error: value });
     if (value === undefined) delete record.is_error;
-    assert.throws(() => parseClaudeOutput(JSON.stringify(record)), /(?:failed|unexpected)/iu);
+    assert.throws(() => parseClaudeOutput(JSON.stringify(record)), /unexpected/iu);
   }
+  assert.throws(() => parseClaudeOutput(JSON.stringify(claudeSuccess("API error", {
+    is_error: true,
+    api_error_status: 529,
+  }))), /failed/iu);
+  const structurallyInvalidError = claudeSuccess("API error", { is_error: true });
+  delete structurallyInvalidError.usage.fallback_credit;
+  assert.throws(() => parseClaudeOutput(JSON.stringify(structurallyInvalidError)), /unexpected/iu);
   for (const required of ["uuid", "stop_reason", "modelUsage", "permission_denials"]) {
     const record = claudeSuccess();
     delete record[required];
@@ -414,14 +512,73 @@ test("parsers reject malformed, unexpected, failed, and missing-response records
   assert.throws(() => parseClaudeOutput(JSON.stringify(claudeSuccess("answer", {
     usage: { ...claudeSuccess().usage, cache_creation: null },
   }))), /unexpected/iu);
+  for (const requiredUsage of ["fallback_credit", "output_tokens_details"]) {
+    const record = claudeSuccess();
+    delete record.usage[requiredUsage];
+    assert.throws(() => parseClaudeOutput(JSON.stringify(record)), /unexpected/iu, requiredUsage);
+    assert.throws(() => parseClaudeOutput(JSON.stringify(claudeSuccess("answer", {
+      usage: { ...claudeSuccess().usage, [requiredUsage]: null },
+    }))), /unexpected/iu, `${requiredUsage} null`);
+  }
+  assert.throws(() => parseClaudeOutput(JSON.stringify(claudeSuccess("answer", {
+    usage: { ...claudeSuccess().usage, fallback_credit: { status: { type: "unknown" } } },
+  }))), /unexpected/iu);
+  assert.throws(() => parseClaudeOutput(JSON.stringify(claudeSuccess("answer", {
+    usage: { ...claudeSuccess().usage, output_tokens_details: { thinking_tokens: "0" } },
+  }))), /unexpected/iu);
+  for (const [usageField, value] of [["service_tier", "economy"], ["speed", "turbo"]]) {
+    assert.throws(() => parseClaudeOutput(JSON.stringify(claudeSuccess("answer", {
+      usage: { ...claudeSuccess().usage, [usageField]: value },
+    }))), /unexpected/iu, usageField);
+  }
+  assert.throws(() => parseClaudeOutput(JSON.stringify(claudeSuccess("answer", {
+    usage: {
+      ...claudeSuccess().usage,
+      iterations: [{
+        type: "message",
+        input_tokens: 1,
+        output_tokens: 1,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        cache_creation: null,
+      }],
+    },
+  }))), /unexpected/iu);
   const invalidModelUsage = structuredClone(claudeSuccess());
   delete invalidModelUsage.modelUsage["claude-sonnet-4-6"].maxOutputTokens;
   assert.throws(() => parseClaudeOutput(JSON.stringify(invalidModelUsage)), /unexpected/iu);
+  for (const [field, value] of [["canonicalModel", 1], ["provider", null], ["costBasis", "retail"]]) {
+    assert.throws(() => parseClaudeOutput(JSON.stringify(claudeSuccess("answer", {
+      modelUsage: {
+        model: { ...claudeSuccess().modelUsage["claude-sonnet-4-6"], [field]: value },
+      },
+    }))), /unexpected/iu, field);
+  }
   assert.throws(() => parseClaudeOutput(JSON.stringify(claudeSuccess("answer", {
     permission_denials: [{ tool_name: "Bash", tool_use_id: "id" }],
   }))), /unexpected/iu);
-  assert.throws(() => parseClaudeOutput(JSON.stringify(claudeSuccess("answer", { permission_denials_count: 0 }))), /unexpected/iu);
+  assert.doesNotThrow(() => parseClaudeOutput(JSON.stringify(claudeSuccess("answer", {
+    permission_denials_count: 0,
+  }))));
   assert.throws(() => parseClaudeOutput(JSON.stringify(claudeSuccess("answer", { api_error_status: 500 }))), /unexpected|failed/iu);
+  for (const [field, value] of [
+    ["ttft_ms", null],
+    ["ttft_stream_ms", null],
+    ["time_to_request_ms", "2"],
+    ["user_message_uuid", 2],
+    ["request_sent_wall_ms", "7"],
+    ["time_to_request_from_spawn_ms", null],
+    ["warm_spare_claimed", "true"],
+    ["time_origin_ms", null],
+    ["queued_turn_count", -1],
+    ["deferred_tool_use", { id: "tool-1", name: "Bash" }],
+    ["terminal_reason", "future_reason"],
+    ["fast_mode_state", "paused"],
+    ["fast_mode_disabled_reason", "future_reason"],
+    ["origin", { kind: "channel" }],
+  ]) {
+    assert.throws(() => parseClaudeOutput(JSON.stringify(claudeSuccess("answer", { [field]: value }))), /unexpected/iu, field);
+  }
   assert.doesNotThrow(() => parseClaudeOutput(JSON.stringify({ ...claudeSuccess(), raw_extra: "future-value" })));
   assert.throws(() => parseCodexOutput("not jsonl"), /malformed/iu);
   assert.throws(() => parseCodexOutput(JSON.stringify({ type: "future.event" })), /unexpected/iu);
@@ -483,6 +640,14 @@ test("parsers reject malformed, unexpected, failed, and missing-response records
   assert.throws(() => parseCodexOutput(lifecycleEnvelope([
     { type: "item.completed", item: { id: "tool-1", type: "command_execution" } },
   ])), /lifecycle|order/iu);
+  assert.throws(() => parseCodexOutput(lifecycleEnvelope([
+    { type: "item.started", item: { id: "patch-1", type: "file_change" } },
+    { type: "item.completed", item: { id: "patch-1", type: "file_change" } },
+  ])), /lifecycle|order/iu);
+  assert.throws(() => parseCodexOutput(lifecycleEnvelope([
+    { type: "item.completed", item: { id: "patch-1", type: "file_change" } },
+    { type: "item.completed", item: { id: "patch-1", type: "file_change" } },
+  ])), /lifecycle|terminal|duplicate/iu);
   assert.throws(() => parseCodexOutput(lifecycleEnvelope([
     { type: "item.started", item: { id: "tool-1", type: "command_execution" } },
     { type: "item.updated", item: { id: "tool-1", type: "file_change" } },
