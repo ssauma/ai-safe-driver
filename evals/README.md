@@ -13,9 +13,14 @@ export async function run({ caseId, locale, mode, turns }) {
 }
 ```
 
-`response` is required. `events` and `actions`, when present, must be arrays of
-strings. Missing `actions` creates an `UNSCORED` attempt; `actions: []` is a
-scored observation. Labels outside that case's canonical rubric are rejected.
+`response` is required and is preserved as raw model text. `actions`, when
+present, must be an array of strings. `events` are not raw logs: they are at
+most 64 conservative, non-sensitive identifiers of at most 80 characters in
+the `hook`, `tool`, or `harness` namespace, such as
+`hook.correction_recurrence` or `tool:auth_failure`. Paths, control characters,
+credential-shaped or high-entropy values, and raw error text are rejected.
+Missing `actions` creates an `UNSCORED` attempt; `actions: []` is a scored
+observation. Labels outside that case's canonical rubric are rejected.
 
 ```sh
 node evals/run-evals.mjs \
@@ -39,12 +44,20 @@ node evals/adjudicate.mjs \
   --out .kb.tmp/ASD-EVAL/adjudicated.jsonl
 ```
 
-The reviewer chooses only labels displayed from the case rubric. The separate
-adjudication file contains no response, event, prompt, path, credentials, or
-free-form notes. `--decisions fixture.json` is the sole non-interactive escape
-hatch and is accepted only with `NODE_ENV=test` for bounded fixtures under
-`.kb.tmp/`; its JSON shape is an array of
-`{ "attemptId": "...", "selectedActions": ["..."] }`.
+The production CLI always requires an interactive TTY and exposes no flag or
+environment bypass. It renders a bounded, control-escaped copy of each raw
+response between explicit untrusted-text delimiters; the raw JSONL remains
+unchanged. The reviewer chooses only numbered labels displayed from the case
+rubric. The separate adjudication file contains no response, event, prompt,
+path, credentials, or free-form notes.
+
+Tests exercise deterministic selections by importing the adjudication core and
+injecting a selector directly. That dependency-injection seam is not exposed
+as an option by `evals/adjudicate.mjs`.
+
+Because the contract requires preserving the adapter's raw `response`, the
+harness cannot guarantee that model text itself contains no secret. Adapters
+must not receive credentials, and test fixtures use synthetic responses only.
 
 ## Fake adapter warning
 

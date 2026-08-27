@@ -17,7 +17,7 @@ export async function run({ caseId, locale, mode, turns }) {
   }
   return {
     response: "Synthetic harness-only response; not model behavior evidence.",
-    events: ["fake_adapter_fixture"],
+    events: ["harness.fake_adapter_fixture"],
     actions: [...item.assertions.required_decisions],
   };
 }

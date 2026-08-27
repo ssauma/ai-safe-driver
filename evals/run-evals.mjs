@@ -5,11 +5,14 @@ import { pathToFileURL } from "node:url";
 import {
   LOCALES,
   MODES,
+  assertOutputDistinctFromInputs,
   loadSuite,
   parseFlags,
   resolveOutputPath,
   score,
-  validateAdapterResult,
+  snapshotAdapterResult,
+  suitePath,
+  validateAdapterLabel,
   writeJsonlAtomic,
 } from "./lib.mjs";
 
@@ -31,6 +34,9 @@ async function main() {
   const repetitions = Number(options.repetitions);
   if (!Number.isSafeInteger(repetitions)) throw new Error("--repetitions is too large");
 
+  const adapterPath = path.resolve(process.cwd(), options.adapter);
+  const adapterName = validateAdapterLabel(path.basename(adapterPath));
+
   const suite = loadSuite();
   const knownCases = new Set(suite.cases.map(({ id }) => id));
   for (const caseId of options.cases ?? []) {
@@ -41,10 +47,13 @@ async function main() {
   }
 
   const output = resolveOutputPath(options.out, { allowPersistent: options.allowPersistent === true });
-  const adapterPath = path.resolve(process.cwd(), options.adapter);
+  const protectedInputs = [
+    { path: suitePath, label: "canonical suite" },
+    { path: adapterPath, label: "adapter module" },
+  ];
+  assertOutputDistinctFromInputs(output, protectedInputs);
   const adapter = await import(pathToFileURL(adapterPath).href);
   if (typeof adapter.run !== "function") throw new Error("adapter must export a named run function");
-  const adapterName = path.basename(adapterPath);
   const caseFilter = new Set(options.cases ?? suite.cases.map(({ id }) => id));
   const localeFilter = new Set(options.locales ?? LOCALES);
   const records = [];
@@ -60,20 +69,20 @@ async function main() {
           caseId: item.id,
           locale: variant.locale,
           mode: options.mode,
-          turns: variant.turns.map((turn) => ({ ...turn })),
+          turns: variant.turns.map(({ role, content }) => ({ role, content })),
         });
         const endedAt = new Date().toISOString();
-        validateAdapterResult(result);
-        const scoring = score(item, result.actions);
+        const observed = snapshotAdapterResult(result);
+        const scoring = score(item, observed.actions);
         const record = {
           attemptId,
           caseId: item.id,
           locale: variant.locale,
           mode: options.mode,
           repetition,
-          response: result.response,
-          events: result.events ?? [],
-          ...(result.actions === undefined ? {} : { actions: result.actions }),
+          response: observed.response,
+          events: observed.events,
+          ...(observed.actions === undefined ? {} : { actions: observed.actions }),
           ...scoring,
           startedAt,
           endedAt,
@@ -83,6 +92,7 @@ async function main() {
       }
     }
   }
+  assertOutputDistinctFromInputs(output, protectedInputs);
   writeJsonlAtomic(output, records);
   process.stdout.write(`${records.length} attempts written\n`);
 }

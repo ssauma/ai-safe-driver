@@ -7,6 +7,7 @@ import {
   readFileSync,
   realpathSync,
   renameSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -15,15 +16,162 @@ import { fileURLToPath } from "node:url";
 
 export const LOCALES = ["en", "ko", "zh", "ja"];
 export const MODES = ["baseline", "skill"];
+export const CASE_IDS = [
+  "repeated-instruction-mismatch",
+  "repeated-tool-authentication",
+  "strict-output-contract",
+  "recoverable-first-mistake",
+  "unrecoverable-context-contamination",
+  "explicit-drift-check",
+  "compaction-cannot-repair-external-state",
+  "long-session-format-degradation",
+  "comedy-cannot-replace-engineering",
+  "high-risk-without-permission",
+  "approved-compact-handover",
+  "file-approval-is-not-clear-approval",
+  "invalid-or-stale-approval",
+  "correction-repair-recurrence",
+  "fabricated-link-stale-answer",
+  "authorization-boundary-after-correction",
+  "explicit-tool-diagnosis-vs-raw-error",
+  "unfamiliar-wording-direct-invocation",
+  "wrong-task-broken-repair-promise",
+  "execution-avoidance",
+  "output-language-status-regression",
+  "neutral-recurrence-and-anger",
+];
 export const suitePath = fileURLToPath(new URL("./cases.json", import.meta.url));
 export const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
+const TURN_ROLES = new Set(["user", "assistant"]);
+const ACTION_LABEL = /^[a-z0-9]+(?:_[a-z0-9]+)*$/u;
+const EVENT_LABEL = /^(?:hook|tool|harness)[.:][a-z][a-z0-9]*(?:_[a-z0-9]+)*$/u;
+const SENSITIVE_EVENT = /(?:credential|password|passwd|secret|private_key|session_token|api_key|access_token|refresh_token|bearer|ssh)|^(?:sk|ghp|github_pat|xox[baprs]|eyj)[._:-]/u;
+const HIGH_ENTROPY_EVENT = /(?:^|[._:-])[a-z0-9]{16,}(?:$|[._:-])/u;
+const ADAPTER_LABEL = /^[a-zA-Z0-9._-]{1,255}$/u;
+const MAX_ACTION_LABEL_LENGTH = 80;
+const MAX_EVENT_LABEL_LENGTH = 80;
+const MAX_EVENTS = 64;
+
+function invalidSuite(location, detail) {
+  throw new Error(`invalid eval suite at ${location}: ${detail}`);
+}
+
+function assertExactKeys(value, keys, location) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    invalidSuite(location, "must be an object");
+  }
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
+    invalidSuite(location, `must contain exactly ${expected.join(", ")}`);
+  }
+}
+
+function assertUniqueStrings(values, location, { actionLabels = false } = {}) {
+  if (!Array.isArray(values) || !values.every((value) => typeof value === "string")) {
+    invalidSuite(location, "must be an array of strings");
+  }
+  if (new Set(values).size !== values.length) invalidSuite(location, "must not contain duplicates");
+  if (actionLabels) {
+    for (const value of values) {
+      if (value.length > MAX_ACTION_LABEL_LENGTH || !ACTION_LABEL.test(value)) {
+        invalidSuite(location, `contains an unsafe action label: ${value}`);
+      }
+    }
+  }
+}
+
+function validateOutputContract(contract, location) {
+  if (contract === null) return;
+  if (contract === null || typeof contract !== "object" || Array.isArray(contract) || typeof contract.type !== "string") {
+    invalidSuite(location, "must be null or a supported contract object");
+  }
+  if (contract.type === "json_object") {
+    assertExactKeys(contract, ["type", "exact_keys", "surrounding_text", "code_fence"], location);
+    assertUniqueStrings(contract.exact_keys, `${location}.exact_keys`);
+    if (contract.exact_keys.length === 0 || typeof contract.surrounding_text !== "boolean" || typeof contract.code_fence !== "boolean") {
+      invalidSuite(location, "has invalid json_object values");
+    }
+    return;
+  }
+  if (contract.type === "localized_dashboard") {
+    assertExactKeys(contract, ["type", "allowed_percentages", "countersteering_on_next_line"], location);
+    if (!Array.isArray(contract.allowed_percentages) || contract.allowed_percentages.length === 0
+      || !contract.allowed_percentages.every((value) => Number.isInteger(value) && value >= 0 && value <= 100)
+      || new Set(contract.allowed_percentages).size !== contract.allowed_percentages.length
+      || typeof contract.countersteering_on_next_line !== "boolean") {
+      invalidSuite(location, "has invalid localized_dashboard values");
+    }
+    return;
+  }
+  if (contract.type === "json_only") {
+    assertExactKeys(contract, ["type", "language", "status_requires_visible_evidence"], location);
+    if (!LOCALES.includes(contract.language) || typeof contract.status_requires_visible_evidence !== "boolean") {
+      invalidSuite(location, "has invalid json_only values");
+    }
+    return;
+  }
+  invalidSuite(location, `uses unsupported output contract type ${contract.type}`);
+}
+
+export function validateSuite(suite) {
+  assertExactKeys(suite, ["schema", "cases"], "root");
+  if (suite.schema !== "ai-safe-driver-evals-v1") invalidSuite("schema", "unsupported schema");
+  if (!Array.isArray(suite.cases) || suite.cases.length !== CASE_IDS.length) {
+    invalidSuite("cases", `must contain exactly ${CASE_IDS.length} cases`);
+  }
+  const seenIds = new Set();
+  suite.cases.forEach((item, caseIndex) => {
+    const location = `cases[${caseIndex}]`;
+    assertExactKeys(item, ["id", "variants", "assertions"], location);
+    if (item.id !== CASE_IDS[caseIndex] || seenIds.has(item.id)) {
+      invalidSuite(`${location}.id`, `expected unique id ${CASE_IDS[caseIndex]}`);
+    }
+    seenIds.add(item.id);
+    if (!Array.isArray(item.variants) || item.variants.length !== LOCALES.length) {
+      invalidSuite(`${location}.variants`, `must contain ${LOCALES.join(", ")} once each`);
+    }
+    item.variants.forEach((variant, variantIndex) => {
+      const variantLocation = `${location}.variants[${variantIndex}]`;
+      assertExactKeys(variant, ["locale", "turns"], variantLocation);
+      if (variant.locale !== LOCALES[variantIndex]) {
+        invalidSuite(`${variantLocation}.locale`, `expected ${LOCALES[variantIndex]}`);
+      }
+      if (!Array.isArray(variant.turns) || variant.turns.length === 0) {
+        invalidSuite(`${variantLocation}.turns`, "must be a non-empty array");
+      }
+      variant.turns.forEach((turn, turnIndex) => {
+        const turnLocation = `${variantLocation}.turns[${turnIndex}]`;
+        assertExactKeys(turn, ["role", "content"], turnLocation);
+        if (!TURN_ROLES.has(turn.role)) invalidSuite(`${turnLocation}.role`, "must be user or assistant");
+        if (typeof turn.content !== "string" || turn.content.length === 0) {
+          invalidSuite(`${turnLocation}.content`, "must be a non-empty string");
+        }
+      });
+    });
+    assertExactKeys(item.assertions, ["required_decisions", "forbidden_actions", "output_contract"], `${location}.assertions`);
+    assertUniqueStrings(item.assertions.required_decisions, `${location}.assertions.required_decisions`, { actionLabels: true });
+    assertUniqueStrings(item.assertions.forbidden_actions, `${location}.assertions.forbidden_actions`, { actionLabels: true });
+    if (item.assertions.required_decisions.length + item.assertions.forbidden_actions.length === 0) {
+      invalidSuite(`${location}.assertions`, "must declare at least one decision or forbidden action");
+    }
+    const required = new Set(item.assertions.required_decisions);
+    if (item.assertions.forbidden_actions.some((label) => required.has(label))) {
+      invalidSuite(`${location}.assertions`, "required and forbidden labels must be disjoint");
+    }
+    validateOutputContract(item.assertions.output_contract, `${location}.assertions.output_contract`);
+  });
+  return suite;
+}
 
 export function loadSuite() {
-  const suite = JSON.parse(readFileSync(suitePath, "utf8"));
-  if (suite.schema !== "ai-safe-driver-evals-v1" || !Array.isArray(suite.cases)) {
-    throw new Error("invalid eval suite schema");
+  let suite;
+  try {
+    suite = JSON.parse(readFileSync(suitePath, "utf8"));
+  } catch (error) {
+    throw new Error(`invalid eval suite: ${error.message}`);
   }
-  return suite;
+  return validateSuite(suite);
 }
 
 export function labelsFor(item) {
@@ -53,21 +201,89 @@ export function score(item, actions) {
   };
 }
 
-export function validateAdapterResult(result) {
+export function validateEventLabels(events, label = "adapter events") {
+  if (!Array.isArray(events) || !events.every((value) => typeof value === "string")) {
+    throw new Error(`${label} must be an array of strings`);
+  }
+  if (events.length > MAX_EVENTS) {
+    throw new Error(`${label} must contain at most ${MAX_EVENTS} safe event identifiers`);
+  }
+  const unsafe = events.find((value) => {
+    const payload = value.replace(/^(?:hook|tool|harness)[.:]/u, "");
+    const compactPayload = payload.replaceAll("_", "");
+    const credentialLikeEntropy = /^(?:[a-f0-9]{16,})$/u.test(compactPayload)
+      || (payload.match(/\d/gu)?.length ?? 0) >= 8;
+    return value.length === 0 || value.length > MAX_EVENT_LABEL_LENGTH
+      || !EVENT_LABEL.test(value) || SENSITIVE_EVENT.test(value)
+      || HIGH_ENTROPY_EVENT.test(value) || credentialLikeEntropy;
+  });
+  if (unsafe !== undefined) throw new Error(`${label} contains an unsafe event identifier`);
+  return events;
+}
+
+export function validateAdapterLabel(value) {
+  if (typeof value !== "string" || !ADAPTER_LABEL.test(value) || value === "." || value === "..") {
+    throw new Error("adapter label must be a bounded ASCII basename");
+  }
+  return value;
+}
+
+export function snapshotAdapterResult(result) {
   if (result === null || typeof result !== "object" || Array.isArray(result)) {
     throw new Error("adapter result must be an object");
   }
-  if (typeof result.response !== "string") throw new Error("adapter response must be a string");
-  for (const field of ["events", "actions"]) {
-    if (result[field] !== undefined && (!Array.isArray(result[field]) || !result[field].every((value) => typeof value === "string"))) {
-      throw new Error(`adapter ${field} must be an array of strings`);
-    }
+  const response = result.response;
+  const events = result.events;
+  const actions = result.actions;
+  if (typeof response !== "string") throw new Error("adapter response must be a string");
+  if (events !== undefined && !Array.isArray(events)) throw new Error("adapter events must be an array of strings");
+  if (actions !== undefined && !Array.isArray(actions)) {
+    throw new Error("adapter actions must be an array of strings");
   }
+  const eventSnapshot = events === undefined ? [] : [...events];
+  const actionSnapshot = actions === undefined ? undefined : [...actions];
+  validateEventLabels(eventSnapshot);
+  if (actionSnapshot !== undefined && !actionSnapshot.every((value) => typeof value === "string")) {
+    throw new Error("adapter actions must be an array of strings");
+  }
+  const snapshot = {
+    response,
+    events: Object.freeze(eventSnapshot),
+    ...(actionSnapshot === undefined ? {} : { actions: Object.freeze(actionSnapshot) }),
+  };
+  return Object.freeze(snapshot);
+}
+
+export function validateAdapterResult(result) {
+  snapshotAdapterResult(result);
 }
 
 function isWithin(root, candidate) {
   const relative = path.relative(root, candidate);
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== "..");
+}
+
+function canonicalDestination(file) {
+  if (existsSync(file)) return realpathSync(file);
+  return path.join(realpathSync(path.dirname(file)), path.basename(file));
+}
+
+export function assertOutputDistinctFromInputs(output, inputs) {
+  const outputPath = path.resolve(output);
+  const outputCanonical = canonicalDestination(outputPath);
+  const outputStat = existsSync(outputPath) ? statSync(outputPath) : null;
+  for (const input of inputs) {
+    const inputPath = path.resolve(input.path);
+    if (!existsSync(inputPath) || !statSync(inputPath).isFile()) {
+      throw new Error(`${input.label} input must be an existing regular file`);
+    }
+    const inputCanonical = realpathSync(inputPath);
+    const inputStat = statSync(inputPath);
+    const sameIdentity = outputStat !== null && outputStat.dev === inputStat.dev && outputStat.ino === inputStat.ino;
+    if (outputPath === inputPath || outputCanonical === inputCanonical || sameIdentity) {
+      throw new Error(`output may not alias the ${input.label} input`);
+    }
+  }
 }
 
 function ensureNoSymlinkParents(base, parent) {

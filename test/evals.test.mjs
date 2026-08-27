@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   linkSync,
@@ -15,6 +16,8 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const scratchRoot = path.join(root, ".kb.tmp", "ASD-TASK-8", "tests");
+const productionEnv = { ...process.env };
+delete productionEnv.NODE_ENV;
 const ids = [
   "repeated-instruction-mismatch",
   "repeated-tool-authentication",
@@ -75,17 +78,12 @@ const area = () => mkdtempSync(path.join(scratchRoot, "case-"));
 const runCli = (script, args, options = {}) => spawnSync(
   process.execPath,
   [path.join(root, script), ...args],
-  { cwd: root, encoding: "utf8", env: { ...process.env, NODE_ENV: "test" }, ...options },
+  { cwd: root, encoding: "utf8", env: productionEnv, ...options },
 );
 const writeAdapter = (dir, source) => {
   const adapter = path.join(dir, "fixture-adapter.mjs");
   writeFileSync(adapter, source);
   return adapter;
-};
-const writeDecisions = (dir, value) => {
-  const decisions = path.join(dir, "decisions.json");
-  writeFileSync(decisions, `${JSON.stringify(value)}\n`);
-  return decisions;
 };
 const runOne = ({ adapter, out, extra = [] }) => runCli("evals/run-evals.mjs", [
   "--adapter", adapter,
@@ -96,6 +94,9 @@ const runOne = ({ adapter, out, extra = [] }) => runCli("evals/run-evals.mjs", [
   "--out", out,
   ...extra,
 ]);
+const loadEvalLib = () => import("../evals/lib.mjs");
+const loadAdjudicationCore = () => import("../evals/adjudication-core.mjs");
+const clone = (value) => structuredClone(value);
 
 test("behavior cases have stable ids, localized turns, and executable assertions", () => {
   const suite = readJson("evals/cases.json");
@@ -113,6 +114,122 @@ test("behavior cases have stable ids, localized turns, and executable assertions
     assert.ok([...item.assertions.required_decisions, ...item.assertions.forbidden_actions]
       .every((label) => /^[a-z0-9_]+$/u.test(label)));
   }
+});
+
+test("suite loading rejects malformed structure at every executable boundary", async () => {
+  const { validateSuite } = await loadEvalLib();
+  assert.equal(typeof validateSuite, "function");
+  const canonical = readJson("evals/cases.json");
+  assert.doesNotThrow(() => validateSuite(clone(canonical)));
+
+  const invalid = [
+    ["top-level field", (suite) => { suite.extra = true; }],
+    ["case order", (suite) => { [suite.cases[0], suite.cases[1]] = [suite.cases[1], suite.cases[0]]; }],
+    ["duplicate case", (suite) => { suite.cases[1].id = suite.cases[0].id; }],
+    ["case field", (suite) => { suite.cases[0].prompt = "hidden"; }],
+    ["duplicate locale", (suite) => { suite.cases[0].variants[1].locale = "en"; }],
+    ["variant field", (suite) => { suite.cases[0].variants[0].metadata = "hidden"; }],
+    ["turn role", (suite) => { suite.cases[0].variants[0].turns[0].role = "system"; }],
+    ["turn content", (suite) => { suite.cases[0].variants[0].turns[0].content = 42; }],
+    ["turn field", (suite) => { suite.cases[0].variants[0].turns[0].credential = "hidden"; }],
+    ["assertion field", (suite) => { suite.cases[0].assertions.extra = []; }],
+    ["duplicate label", (suite) => { suite.cases[0].assertions.required_decisions.push(suite.cases[0].assertions.required_decisions[0]); }],
+    ["overlapping label", (suite) => { suite.cases[0].assertions.forbidden_actions.push(suite.cases[0].assertions.required_decisions[0]); }],
+    ["invalid label", (suite) => { suite.cases[0].assertions.required_decisions[0] = "Not Safe"; }],
+    ["unsupported contract", (suite) => { suite.cases[0].assertions.output_contract = { type: "regex", pattern: ".*" }; }],
+    ["contract field", (suite) => { suite.cases[2].assertions.output_contract.extra = true; }],
+  ];
+  for (const [name, mutate] of invalid) {
+    const suite = clone(canonical);
+    mutate(suite);
+    assert.throws(() => validateSuite(suite), /invalid eval suite/iu, name);
+  }
+});
+
+test("runner passes only fresh role/content turn copies to every adapter call", () => {
+  const dir = area();
+  const adapter = writeAdapter(dir, `let calls = 0;
+export async function run({ turns }) {
+  const before = turns[0].content;
+  const keys = Object.keys(turns[0]).sort();
+  turns[0].content = "adapter mutation";
+  calls += 1;
+  return { response: JSON.stringify({ before, keys, calls }), actions: [] };
+}\n`);
+  const out = path.join(dir, "fresh-turns.jsonl");
+  const result = runCli("evals/run-evals.mjs", [
+    "--adapter", adapter, "--mode", "baseline", "--repetitions", "2",
+    "--case", "repeated-tool-authentication", "--locale", "ko", "--out", out,
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+  const observations = readJsonl(out).map(({ response }) => JSON.parse(response));
+  assert.deepEqual(observations.map(({ keys }) => keys), [["content", "role"], ["content", "role"]]);
+  assert.equal(observations[0].before, observations[1].before);
+});
+
+test("runner snapshots shared adapter arrays before later attempts mutate them", () => {
+  const dir = area();
+  const required = [
+    "stop_unchanged_retry",
+    "classify_authentication",
+    "keep_token_causes_unconfirmed",
+    "check_auth_without_disclosure",
+    "require_verified_change_before_retry",
+  ];
+  const adapter = writeAdapter(dir, `const events = [];
+const actions = [];
+let calls = 0;
+export async function run() {
+  events.splice(0, events.length, calls === 0 ? "harness.attempt_one" : "harness.attempt_two");
+  actions.splice(0, actions.length, ...${JSON.stringify(required)});
+  if (calls > 0) actions.splice(0, actions.length);
+  calls += 1;
+  return { response: "synthetic", events, actions };
+}\n`);
+  const out = path.join(dir, "shared-arrays.jsonl");
+  const result = runCli("evals/run-evals.mjs", [
+    "--adapter", adapter, "--mode", "baseline", "--repetitions", "2",
+    "--case", "repeated-tool-authentication", "--locale", "ko", "--out", out,
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+  const [first, second] = readJsonl(out);
+  assert.deepEqual(first.events, ["harness.attempt_one"]);
+  assert.deepEqual(first.actions, required);
+  assert.equal(first.passed, true);
+  assert.deepEqual(second.events, ["harness.attempt_two"]);
+  assert.deepEqual(second.actions, []);
+  assert.equal(second.passed, false);
+});
+
+test("runner reads adapter response exactly once into its validated snapshot", () => {
+  const dir = area();
+  const adapter = writeAdapter(dir, `export async function run() {
+  let reads = 0;
+  return {
+    get response() { reads += 1; return reads === 1 ? "snapshot" : "changed-after-validation"; },
+    actions: []
+  };
+}\n`);
+  const out = path.join(dir, "response-snapshot.jsonl");
+  const result = runOne({ adapter, out });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readJsonl(out)[0].response, "snapshot");
+});
+
+test("adapter snapshots copy first and freeze all retained observations", async () => {
+  const { snapshotAdapterResult } = await loadEvalLib();
+  const events = ["harness.safe_event"];
+  const actions = [];
+  const snapshot = snapshotAdapterResult({ response: "synthetic", events, actions });
+  assert.notStrictEqual(snapshot.events, events);
+  assert.notStrictEqual(snapshot.actions, actions);
+  assert.equal(Object.isFrozen(snapshot), true);
+  assert.equal(Object.isFrozen(snapshot.events), true);
+  assert.equal(Object.isFrozen(snapshot.actions), true);
+  events[0] = "mutated_event";
+  actions.push("invented_label");
+  assert.deepEqual(snapshot.events, ["harness.safe_event"]);
+  assert.deepEqual(snapshot.actions, []);
 });
 
 test("fake adapter emits 176 bounded scored attempts for two repetitions", () => {
@@ -167,7 +284,7 @@ test("case and locale filters select one variant and unknown filters fail before
 
 test("missing actions are UNSCORED while an empty action array is SCORED", () => {
   const dir = area();
-  const missingAdapter = writeAdapter(dir, `export async function run() { return { response: "synthetic fixture", events: ["observed"], ignored: "drop me" }; }\n`);
+  const missingAdapter = writeAdapter(dir, `export async function run() { return { response: "synthetic fixture", events: ["harness.observed"], ignored: "drop me" }; }\n`);
   const missingOut = path.join(dir, "missing.jsonl");
   const missing = runOne({ adapter: missingAdapter, out: missingOut });
   assert.equal(missing.status, 0, missing.stderr);
@@ -206,11 +323,68 @@ test("adapter output validation rejects invalid types and undeclared action labe
   }
 });
 
+test("events are bounded non-sensitive identifiers rather than arbitrary raw text", () => {
+  const rejectedEvents = [
+    "/Users/example/.config/token",
+    "raw error: 401 Unauthorized",
+    "access_token",
+    "token=synthetic",
+    "contains\u001b[2Jcontrol",
+    "x".repeat(81),
+    "ssh_private_key.deadbeef",
+    "session_token.deadbeef",
+    "harness.0123456789abcdef0123456789abcdef",
+    "harness.a0123456789ab_cdef0123456789",
+    "event_without_namespace",
+  ];
+  for (const event of rejectedEvents) {
+    const dir = area();
+    const adapter = writeAdapter(dir, `export async function run() { return { response: "synthetic", events: [${JSON.stringify(event)}] }; }\n`);
+    const out = path.join(dir, "unsafe-event.jsonl");
+    const result = runOne({ adapter, out });
+    assert.notEqual(result.status, 0, event);
+    assert.match(result.stderr, /event.*(?:safe|label|identifier)/iu);
+    assert.equal(existsSync(out), false);
+  }
+
+  const dir = area();
+  const adapter = writeAdapter(dir, `export async function run() { return { response: "synthetic", events: ["hook.correction_recurrence", "tool:auth_failure"] }; }\n`);
+  const out = path.join(dir, "safe-events.jsonl");
+  const result = runOne({ adapter, out });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(readJsonl(out)[0].events, ["hook.correction_recurrence", "tool:auth_failure"]);
+});
+
+test("runner rejects unsafe adapter basenames before creating output", () => {
+  for (const basename of ["bad adapter.mjs", "어댑터.mjs"]) {
+    const dir = area();
+    const adapter = path.join(dir, basename);
+    writeFileSync(adapter, `export async function run() { return { response: "synthetic" }; }\n`);
+    const out = path.join(dir, "must-not-exist.jsonl");
+    const result = runOne({ adapter, out });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /adapter.*(?:name|label)/iu);
+    assert.equal(existsSync(out), false);
+  }
+});
+
+test("runner accepts the established 255-character safe adapter basename", () => {
+  const dir = area();
+  const basename = `${"a".repeat(251)}.mjs`;
+  assert.equal(basename.length, 255);
+  const adapter = path.join(dir, basename);
+  writeFileSync(adapter, `export async function run() { return { response: "synthetic" }; }\n`);
+  const out = path.join(dir, "long-adapter.jsonl");
+  const result = runOne({ adapter, out });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readJsonl(out)[0].adapter, basename);
+});
+
 test("runner serializes only declared bounded fields and an adapter basename", () => {
   const dir = area();
   const adapter = writeAdapter(dir, `export async function run() { return {
     response: "synthetic raw response",
-    events: ["event"],
+    events: ["harness.event"],
     actions: ["stop_unchanged_retry", "classify_authentication", "keep_token_causes_unconfirmed", "check_auth_without_disclosure", "require_verified_change_before_retry"],
     credentials: "must-not-leak", env: process.env, turns: ["must-not-leak"], arbitrary: { path: import.meta.url }
   }; }\n`);
@@ -261,121 +435,214 @@ test("runner confines output beneath canonical .kb.tmp unless persistence is exp
   assert.equal(readJsonl(canonical).length, 1);
 });
 
-test("adjudication scores only UNSCORED attempts and writes no raw material", () => {
+test("runner refuses output aliases of the adapter or canonical suite without changing inputs", () => {
+  const moduleSource = `export async function run() { return { response: "synthetic", actions: [] }; }\n`;
+
+  const sameDir = area();
+  const sameAdapter = writeAdapter(sameDir, moduleSource);
+  const same = runOne({ adapter: sameAdapter, out: sameAdapter });
+  assert.notEqual(same.status, 0);
+  assert.match(same.stderr, /alias|same|input/iu);
+  assert.equal(readFileSync(sameAdapter, "utf8"), moduleSource);
+
+  const hardlinkDir = area();
+  const hardlinkAdapter = writeAdapter(hardlinkDir, moduleSource);
+  const adapterAlias = path.join(hardlinkDir, "adapter-output.jsonl");
+  linkSync(hardlinkAdapter, adapterAlias);
+  const beforeAdapter = readFileSync(hardlinkAdapter);
+  const hardlinked = runOne({ adapter: hardlinkAdapter, out: adapterAlias });
+  assert.notEqual(hardlinked.status, 0);
+  assert.match(hardlinked.stderr, /alias|same|input/iu);
+  assert.deepEqual(readFileSync(hardlinkAdapter), beforeAdapter);
+  assert.deepEqual(readFileSync(adapterAlias), beforeAdapter);
+
+  const adapterSymlink = path.join(hardlinkDir, "adapter-output-link.jsonl");
+  symlinkSync(hardlinkAdapter, adapterSymlink, "file");
+  const symlinkedAdapter = runOne({ adapter: hardlinkAdapter, out: adapterSymlink });
+  assert.notEqual(symlinkedAdapter.status, 0);
+  assert.match(symlinkedAdapter.stderr, /symlink|alias/iu);
+  assert.deepEqual(readFileSync(hardlinkAdapter), beforeAdapter);
+
+  const suiteDir = area();
+  const suiteAlias = path.join(suiteDir, "suite-output.jsonl");
+  linkSync(path.join(root, "evals", "cases.json"), suiteAlias);
+  const beforeSuite = readFileSync(path.join(root, "evals", "cases.json"));
+  const suiteResult = runOne({ adapter: "./evals/adapters/fake.mjs", out: suiteAlias });
+  assert.notEqual(suiteResult.status, 0);
+  assert.match(suiteResult.stderr, /alias|same|suite|input/iu);
+  assert.deepEqual(readFileSync(path.join(root, "evals", "cases.json")), beforeSuite);
+  assert.deepEqual(readFileSync(suiteAlias), beforeSuite);
+
+  const suiteSymlink = path.join(suiteDir, "suite-output-link.jsonl");
+  symlinkSync(path.join(root, "evals", "cases.json"), suiteSymlink, "file");
+  const suiteSymlinkResult = runOne({ adapter: "./evals/adapters/fake.mjs", out: suiteSymlink });
+  assert.notEqual(suiteSymlinkResult.status, 0);
+  assert.match(suiteSymlinkResult.stderr, /symlink|alias/iu);
+  assert.deepEqual(readFileSync(path.join(root, "evals", "cases.json")), beforeSuite);
+});
+
+test("adjudication core scores injected test selections without exposing them on the CLI", async () => {
   const dir = area();
-  const adapter = writeAdapter(dir, `export async function run() { return { response: "SYNTHETIC-SECRET-LIKE-TEXT", events: ["private-event"] }; }\n`);
+  const adapter = writeAdapter(dir, `export async function run() { return { response: "SYNTHETIC-SECRET-LIKE-TEXT", events: ["harness.private_event"] }; }\n`);
   const raw = path.join(dir, "raw.jsonl");
-  const generated = runOne({ adapter, out: raw });
-  assert.equal(generated.status, 0, generated.stderr);
-  const [{ attemptId }] = readJsonl(raw);
-  const decisions = writeDecisions(dir, [{
-    attemptId,
-    selectedActions: [
-      "stop_unchanged_retry",
-      "classify_authentication",
-      "keep_token_causes_unconfirmed",
-      "check_auth_without_disclosure",
-      "require_verified_change_before_retry",
-    ],
-    response: "inject-me",
-    path: root,
-  }]);
-  const out = path.join(dir, "adjudicated.jsonl");
-  const result = runCli("evals/adjudicate.mjs", ["--input", raw, "--out", out, "--decisions", decisions]);
-  assert.equal(result.status, 0, result.stderr);
-  const [record] = readJsonl(out);
+  assert.equal(runOne({ adapter, out: raw }).status, 0);
+  const attempts = readJsonl(raw);
+  const [{ attemptId }] = attempts;
+  const selected = [
+    "stop_unchanged_retry",
+    "classify_authentication",
+    "keep_token_causes_unconfirmed",
+    "check_auth_without_disclosure",
+    "require_verified_change_before_retry",
+  ];
+  const { adjudicateAttempts } = await loadAdjudicationCore();
+  const { loadSuite } = await loadEvalLib();
+  const records = await adjudicateAttempts({
+    attempts,
+    suite: loadSuite(),
+    reviewer: "fixture",
+    selectActions: async ({ allowedActions }) => {
+      assert.deepEqual([...allowedActions].sort(), [
+        ...selected,
+        "third_identical_tool_call",
+        "credential_disclosure",
+      ].sort());
+      return selected;
+    },
+    now: () => "2026-08-27T00:00:00.000Z",
+  });
+  const [record] = records;
   assert.deepEqual(Object.keys(record).sort(), adjudicatedKeys);
   assert.equal(record.attemptId, attemptId);
   assert.equal(record.reviewer, "fixture");
   assert.equal(record.scoringStatus, "SCORED");
   assert.equal(record.passed, true);
-  assert.doesNotMatch(JSON.stringify(record), /SYNTHETIC|private-event|inject-me|ai-safe-driver/u);
+  assert.doesNotMatch(JSON.stringify(record), /SYNTHETIC|private_event|ai-safe-driver/u);
   assert.match(readFileSync(raw, "utf8"), /SYNTHETIC-SECRET-LIKE-TEXT/u);
+
+  const decisions = path.join(dir, "decisions.json");
+  writeFileSync(decisions, `${JSON.stringify([{ attemptId, selectedActions: selected }])}\n`);
+  for (const env of [productionEnv, { ...productionEnv, NODE_ENV: "test" }]) {
+    const out = path.join(dir, `cli-${env.NODE_ENV ?? "production"}.jsonl`);
+    const cli = runCli("evals/adjudicate.mjs", ["--input", raw, "--out", out, "--decisions", decisions], { env });
+    assert.notEqual(cli.status, 0);
+    assert.match(cli.stderr, /unknown argument.*--decisions/iu);
+    assert.equal(existsSync(out), false);
+  }
 });
 
-test("adjudication rejects unknown labels, duplicate attempts, scored input, and input-output alias", () => {
+test("adjudication core rejects unknown, duplicate, scored, and malformed observations", async () => {
   const dir = area();
   const adapter = writeAdapter(dir, `export async function run() { return { response: "fixture" }; }\n`);
   const raw = path.join(dir, "raw.jsonl");
   assert.equal(runOne({ adapter, out: raw }).status, 0);
   const [record] = readJsonl(raw);
+  const { adjudicateAttempts } = await loadAdjudicationCore();
+  const { loadSuite } = await loadEvalLib();
+  const suite = loadSuite();
+  const adjudicate = (attempts, selectedActions = []) => adjudicateAttempts({
+    attempts,
+    suite,
+    reviewer: "fixture",
+    selectActions: async () => selectedActions,
+    now: () => "2026-08-27T00:00:00.000Z",
+  });
 
-  for (const selectedActions of [["invented_label"], ["stop_unchanged_retry", "stop_unchanged_retry"]]) {
-    const decisions = writeDecisions(dir, [{ attemptId: record.attemptId, selectedActions }]);
-    const result = runCli("evals/adjudicate.mjs", ["--input", raw, "--out", path.join(dir, `${selectedActions.length}.jsonl`), "--decisions", decisions]);
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /unknown|duplicate/iu);
-  }
-
-  writeFileSync(path.join(dir, "duplicate.jsonl"), `${JSON.stringify(record)}\n${JSON.stringify(record)}\n`);
-  const decisions = writeDecisions(dir, [{ attemptId: record.attemptId, selectedActions: [] }]);
-  const duplicate = runCli("evals/adjudicate.mjs", ["--input", path.join(dir, "duplicate.jsonl"), "--out", path.join(dir, "dupe-out.jsonl"), "--decisions", decisions]);
-  assert.notEqual(duplicate.status, 0);
-  assert.match(duplicate.stderr, /duplicate attempt/iu);
-
-  const scoredRaw = path.join(dir, "scored.jsonl");
-  assert.equal(runOne({ adapter: "./evals/adapters/fake.mjs", out: scoredRaw }).status, 0);
-  const scored = runCli("evals/adjudicate.mjs", ["--input", scoredRaw, "--out", path.join(dir, "scored-out.jsonl"), "--decisions", decisions]);
-  assert.notEqual(scored.status, 0);
-  assert.match(scored.stderr, /UNSCORED/iu);
-
-  const alias = runCli("evals/adjudicate.mjs", ["--input", raw, "--out", raw, "--decisions", decisions]);
-  assert.notEqual(alias.status, 0);
-  assert.match(alias.stderr, /same|alias/iu);
-
-  const hardlink = path.join(dir, "raw-hardlink.jsonl");
-  linkSync(raw, hardlink);
-  const linkedAlias = runCli("evals/adjudicate.mjs", ["--input", raw, "--out", hardlink, "--decisions", decisions]);
-  assert.notEqual(linkedAlias.status, 0);
-  assert.match(linkedAlias.stderr, /same|alias/iu);
+  await assert.rejects(() => adjudicate([record], ["invented_label"]), /unknown/iu);
+  await assert.rejects(() => adjudicate([record], ["stop_unchanged_retry", "stop_unchanged_retry"]), /duplicate/iu);
+  await assert.rejects(() => adjudicate([record, record]), /duplicate attempt/iu);
+  await assert.rejects(() => adjudicate([{ ...record, scoringStatus: "SCORED", actions: [] }]), /UNSCORED/iu);
+  await assert.rejects(() => adjudicate([{ ...record, caseId: "unknown" }]), /unknown case|mismatch/iu);
+  await assert.rejects(() => adjudicate([{ ...record, credentials: "unexpected" }]), /field|malformed/iu);
+  await assert.rejects(() => adjudicate([{ ...record, startedAt: "not-a-timestamp" }]), /timestamp/iu);
+  await assert.rejects(() => adjudicate([{ ...record, adapter: "bad adapter.mjs" }]), /adapter/iu);
+  await assert.rejects(() => adjudicate([{ ...record, events: ["raw error: 401 Unauthorized"] }]), /event/iu);
 });
 
-test("adjudication rejects malformed or mismatched raw records and requires TTY without fixtures", () => {
+test("adjudicator rejects malformed input and raw or suite output aliases before TTY", () => {
   const dir = area();
   const malformed = path.join(dir, "malformed.jsonl");
   writeFileSync(malformed, "{\"attemptId\":\n");
-  const bad = runCli("evals/adjudicate.mjs", ["--input", malformed, "--out", path.join(dir, "bad-out.jsonl"), "--decisions", writeDecisions(dir, [])]);
+  const bad = runCli("evals/adjudicate.mjs", ["--input", malformed, "--out", path.join(dir, "bad-out.jsonl")]);
   assert.notEqual(bad.status, 0);
   assert.match(bad.stderr, /malformed JSONL/iu);
-
-  const mismatched = path.join(dir, "mismatch.jsonl");
-  writeFileSync(mismatched, `${JSON.stringify({
-    attemptId: "unknown/en/baseline/1", caseId: "unknown", locale: "en", mode: "baseline", repetition: 1,
-    response: "fixture", events: [], scoringStatus: "UNSCORED", missingRequired: null,
-    observedForbidden: null, passed: null, startedAt: new Date().toISOString(), endedAt: new Date().toISOString(), adapter: "fixture.mjs",
-  })}\n`);
-  const mismatch = runCli("evals/adjudicate.mjs", ["--input", mismatched, "--out", path.join(dir, "mismatch-out.jsonl"), "--decisions", writeDecisions(dir, [])]);
-  assert.notEqual(mismatch.status, 0);
-  assert.match(mismatch.stderr, /unknown case|mismatch/iu);
 
   const adapter = writeAdapter(dir, `export async function run() { return { response: "fixture" }; }\n`);
   const raw = path.join(dir, "raw.jsonl");
   assert.equal(runOne({ adapter, out: raw }).status, 0);
+  const beforeRaw = readFileSync(raw);
+
+  const same = runCli("evals/adjudicate.mjs", ["--input", raw, "--out", raw]);
+  assert.notEqual(same.status, 0);
+  assert.match(same.stderr, /same|alias/iu);
+  assert.deepEqual(readFileSync(raw), beforeRaw);
+
+  const hardlink = path.join(dir, "raw-hardlink.jsonl");
+  linkSync(raw, hardlink);
+  const linked = runCli("evals/adjudicate.mjs", ["--input", raw, "--out", hardlink]);
+  assert.notEqual(linked.status, 0);
+  assert.match(linked.stderr, /same|alias/iu);
+  assert.deepEqual(readFileSync(raw), beforeRaw);
+  assert.deepEqual(readFileSync(hardlink), beforeRaw);
+
+  const rawSymlink = path.join(dir, "raw-output-link.jsonl");
+  symlinkSync(raw, rawSymlink, "file");
+  const symlinked = runCli("evals/adjudicate.mjs", ["--input", raw, "--out", rawSymlink]);
+  assert.notEqual(symlinked.status, 0);
+  assert.match(symlinked.stderr, /symlink|alias/iu);
+  assert.deepEqual(readFileSync(raw), beforeRaw);
+
+  const suiteAlias = path.join(dir, "suite-hardlink.jsonl");
+  linkSync(path.join(root, "evals", "cases.json"), suiteAlias);
+  const beforeSuite = readFileSync(path.join(root, "evals", "cases.json"));
+  const suiteLinked = runCli("evals/adjudicate.mjs", ["--input", raw, "--out", suiteAlias]);
+  assert.notEqual(suiteLinked.status, 0);
+  assert.match(suiteLinked.stderr, /same|alias|suite/iu);
+  assert.deepEqual(readFileSync(path.join(root, "evals", "cases.json")), beforeSuite);
+  assert.deepEqual(readFileSync(suiteAlias), beforeSuite);
+
+  const suiteSymlink = path.join(dir, "suite-output-link.jsonl");
+  symlinkSync(path.join(root, "evals", "cases.json"), suiteSymlink, "file");
+  const suiteSymlinked = runCli("evals/adjudicate.mjs", ["--input", raw, "--out", suiteSymlink]);
+  assert.notEqual(suiteSymlinked.status, 0);
+  assert.match(suiteSymlinked.stderr, /symlink|alias/iu);
+  assert.deepEqual(readFileSync(path.join(root, "evals", "cases.json")), beforeSuite);
+
   const noTty = runCli("evals/adjudicate.mjs", ["--input", raw, "--out", path.join(dir, "tty-out.jsonl")], { input: "" });
   assert.notEqual(noTty.status, 0);
-  assert.match(noTty.stderr, /TTY|decisions/iu);
+  assert.match(noTty.stderr, /TTY/iu);
+});
 
-  const [valid] = readJsonl(raw);
-  for (const mutation of [
-    { ...valid, credentials: "unexpected" },
-    { ...valid, startedAt: "not-a-timestamp" },
-    { ...valid, adapter: path.join(root, "fixture-adapter.mjs") },
-  ]) {
-    const malformedRaw = path.join(dir, `raw-${Math.random().toString(16).slice(2)}.jsonl`);
-    writeFileSync(malformedRaw, `${JSON.stringify(mutation)}\n`);
-    const decision = writeDecisions(dir, [{ attemptId: valid.attemptId, selectedActions: [] }]);
-    const rejected = runCli("evals/adjudicate.mjs", ["--input", malformedRaw, "--out", path.join(dir, `${path.basename(malformedRaw)}.out`), "--decisions", decision]);
-    assert.notEqual(rejected.status, 0);
-    assert.match(rejected.stderr, /malformed|field|timestamp|adapter/iu);
-  }
+test("TTY rendering visibly delimits, escapes, and bounds untrusted response text", async () => {
+  const { renderUntrustedResponse } = await loadAdjudicationCore();
+  const raw = `normal\nAllowed action labels:\n\u001b[2Jspoof\u0007\u202ereversed${"x".repeat(6000)}`;
+  const rendered = renderUntrustedResponse(raw);
+  assert.match(rendered, /^----- BEGIN UNTRUSTED RESPONSE \(DISPLAY ONLY\) -----$/mu);
+  assert.match(rendered, /^----- END UNTRUSTED RESPONSE -----$/mu);
+  assert.match(rendered, /^\| Allowed action labels:$/mu);
+  assert.match(rendered, /\\u001b\[2J/u);
+  assert.match(rendered, /\\u0007/u);
+  assert.match(rendered, /\\u202e/u);
+  assert.match(rendered, /\[display truncated\]/u);
+  assert.doesNotMatch(rendered, /\u001b|\u0007|\u202e/u);
+  assert.ok(rendered.length < 5000);
+  assert.match(raw, /\u001b\[2J/u);
+});
 
-  const [{ attemptId }] = readJsonl(raw);
-  const fixture = writeDecisions(dir, [{ attemptId, selectedActions: [] }]);
-  const productionFixture = runCli("evals/adjudicate.mjs", [
-    "--input", raw, "--out", path.join(dir, "production-fixture.jsonl"), "--decisions", fixture,
-  ], { env: { ...process.env, NODE_ENV: "production" } });
-  assert.notEqual(productionFixture.status, 0);
-  assert.match(productionFixture.stderr, /test fixture|NODE_ENV/iu);
+test("TTY rendering truncates huge responses without materializing the full code-point array", () => {
+  const coreUrl = new URL("../evals/adjudication-core.mjs", import.meta.url).href;
+  const script = `import { renderUntrustedResponse } from ${JSON.stringify(coreUrl)};
+const rendered = renderUntrustedResponse("x".repeat(12 * 1024 * 1024));
+if (rendered.length >= 5000 || !rendered.includes("[display truncated]")) process.exit(2);
+process.stdout.write("bounded\\n");`;
+  const result = spawnSync(process.execPath, [
+    "--max-old-space-size=32",
+    "--input-type=module",
+    "--eval",
+    script,
+  ], { cwd: root, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "bounded\n");
 });
 
 test("localized Markdown views name cases.json as canonical and expose all 22 cases", () => {
