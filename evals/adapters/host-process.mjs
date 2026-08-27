@@ -2,7 +2,6 @@ import { spawn } from "node:child_process";
 
 const OPERATIONAL_ENVIRONMENT = [
   "PATH",
-  "HOME",
   "TMPDIR",
   "TEMP",
   "TMP",
@@ -15,7 +14,18 @@ const OPERATIONAL_ENVIRONMENT = [
   "SSL_CERT_FILE",
   "SSL_CERT_DIR",
   "NODE_EXTRA_CA_CERTS",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
 ];
+
+export class HostAdapterBlockedError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "HostAdapterBlockedError";
+    this.code = "HOST_ADAPTER_BLOCKED";
+  }
+}
 
 export function sanitizedHostEnvironment(source, allowedCredentialNames = []) {
   const result = {};
@@ -25,24 +35,32 @@ export function sanitizedHostEnvironment(source, allowedCredentialNames = []) {
   return result;
 }
 
-export function runHostProcess({ executable, args, input, env, timeoutMs, maxOutputBytes }) {
+export function runHostProcess({
+  executable,
+  args,
+  input,
+  env,
+  timeoutMs,
+  maxOutputBytes,
+  platform = process.platform,
+}) {
+  if (platform === "win32") {
+    throw new HostAdapterBlockedError("host adapter execution is BLOCKED on Windows");
+  }
   if (typeof executable !== "string" || executable.length === 0 || !Array.isArray(args)) {
     throw new Error("host adapter command is invalid");
   }
   if (typeof input !== "string" || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1
-    || !Number.isSafeInteger(maxOutputBytes) || maxOutputBytes < 1) {
+    || !Number.isSafeInteger(maxOutputBytes) || maxOutputBytes < 1
+    || env === null || typeof env !== "object" || Array.isArray(env)) {
     throw new Error("host adapter process bounds are invalid");
   }
 
   return new Promise((resolve, reject) => {
-    const childEnvironment = {
-      ...(typeof process.env.PATH === "string" ? { PATH: process.env.PATH } : {}),
-      ...env,
-    };
-    const processGroup = process.platform !== "win32";
+    const processGroup = true;
     const child = spawn(executable, args, {
       detached: processGroup,
-      env: childEnvironment,
+      env,
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,

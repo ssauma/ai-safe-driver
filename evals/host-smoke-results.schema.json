@@ -5,9 +5,24 @@
   "required": ["host", "host_version", "os", "node_version", "results"],
   "properties": {
     "host": { "enum": ["claude-code", "codex"] },
-    "host_version": { "type": "string", "minLength": 1, "maxLength": 100 },
-    "os": { "type": "string", "minLength": 1, "maxLength": 100 },
-    "node_version": { "type": "string", "minLength": 1, "maxLength": 100 },
+    "host_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^(?:(?:claude(?:-code)?|codex(?:-cli)?) )?v?[0-9]{1,4}\\.[0-9]{1,4}\\.[0-9]{1,4}$"
+    },
+    "os": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^(?:macOS [0-9]{1,3}\\.[0-9]{1,3}(?:\\.[0-9]{1,3})?(?: \\([0-9]{1,3}[A-Z][0-9]{1,6}\\))?|Darwin [0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}|Linux [0-9]{1,3}\\.[0-9]{1,3}(?:\\.[0-9]{1,3})?(?:-[0-9]{1,5})?(?:-(?:generic|amd64|arm64|aws|azure))?|Ubuntu [0-9]{1,3}\\.[0-9]{1,3}(?:\\.[0-9]{1,3})?(?: LTS)?|Windows(?:_NT| 10| 11) [0-9]{1,3}(?:\\.[0-9]{1,6}){1,3})$"
+    },
+    "node_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 50,
+      "pattern": "^v?[0-9]{1,4}\\.[0-9]{1,4}\\.[0-9]{1,4}$"
+    },
     "results": {
       "type": "array",
       "minItems": 10,
