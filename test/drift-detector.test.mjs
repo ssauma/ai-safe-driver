@@ -150,6 +150,18 @@ test("requires diagnostic intent around conversation or session health nouns", (
   ]) assert.equal(classifyUserPrompt(text).explicitHealthCheck, false, text);
 });
 
+test("requires direct multilingual health-check intent", () => {
+  const cases = [
+    ["이 대화 상태가 정상인지 점검해 줘.", "대화 상태 저장 기능이 필요해"],
+    ["请检查这段对话是否跑偏了。", "对话模块有问题，请修复"],
+    ["会話がドリフトしていないか確認してください。", "会話状態を保存する機能を実装してください"],
+  ];
+  for (const [positive, negative] of cases) {
+    assert.equal(classifyUserPrompt(positive).explicitHealthCheck, true, positive);
+    assert.equal(classifyUserPrompt(negative).explicitHealthCheck, false, negative);
+  }
+});
+
 test("recognizes bounded agent-output corrections without matching other previous nouns", () => {
   const correction = classifyUserPrompt("The previous response didn't follow the requested format.");
   assert.equal(correction.correction, true);
