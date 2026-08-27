@@ -80,13 +80,60 @@ test("does not treat emphasis or ordinary apology as drift", () => {
     protest: false,
     explicitHealthCheck: false,
     explicitToolDiagnosis: false,
-    emphasis: true,
   });
   assert.deepEqual(classifyAssistantResponse("Sorry for the delay."), {
     acknowledgment: false,
     apology: true,
     repairPromise: false,
   });
+});
+
+test("does not seed drift state from backlog, neutral recurrence, or quoted diagnostics", () => {
+  const cases = [
+    "다시 빠르게 진행해줘.",
+    "다시 틀어줘.",
+    "궁금한 게 있는데 다시 물어봐도 돼?",
+    "그 함수는 아직 안 했어, 이제 해줘.",
+    "I didn't get the email yet.",
+    "我还没吃饭。",
+    "我还没决定用哪个方案。",
+    "我还没有决定用哪个方案。",
+    "Create a new session token endpoint.",
+    "新しいセッションを保存する機能を実装して。",
+    "Analyze why the sentence “The same tool call failed again” is an error message.",
+  ];
+  for (const text of cases) {
+    const signals = classifyUserPrompt(text);
+    assert.equal(signals.correction, false, text);
+    assert.equal(signals.recurrence, false, text);
+    assert.equal(signals.protest, false, text);
+    assert.equal(signals.explicitHealthCheck, false, text);
+    assert.equal(signals.explicitToolDiagnosis, false, text);
+  }
+});
+
+test("unrelated apology and recurrence cannot form one correction cycle", () => {
+  let state = createInitialState(1000);
+  state = applyUserTurn(state, classifyUserPrompt("I didn't enjoy the movie."), 1100).state;
+  state = applyAssistantTurn(state, classifyAssistantResponse("Sorry about that."), 1200);
+  const result = applyUserTurn(state, classifyUserPrompt("My printer is still broken."), 1300);
+  assert.equal(result.inject, false);
+});
+
+test("recognizes natural health and repeated-tool diagnosis wording", () => {
+  assert.equal(
+    classifyUserPrompt("Please assess whether this conversation has drifted.").explicitHealthCheck,
+    true,
+  );
+  assert.equal(
+    classifyUserPrompt("The tool invocation timed out twice; investigate the cause.").explicitToolDiagnosis,
+    true,
+  );
+  assert.equal(
+    classifyUserPrompt("You promised to correct it, yet you made the identical mistake once more.").recurrence,
+    true,
+  );
+  assert.equal(classifyUserPrompt("It still didn't work.").recurrence, true);
 });
 
 test("does not treat neutral recurrence words as a repeated failure", () => {

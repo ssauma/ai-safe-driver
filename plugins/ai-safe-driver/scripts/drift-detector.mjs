@@ -4,17 +4,24 @@ export const COOLDOWN_PROMPTS = 2;
 
 const testAny = (patterns, text) => patterns.some((pattern) => pattern.test(text));
 const normalized = (text) => typeof text === "string" ? text.normalize("NFKC").trim() : "";
+const stripQuotedSegments = (text) => text
+  .replace(/"[^"\n]*"/gu, " ")
+  .replace(/“[^”\n]*”/gu, " ")
+  .replace(/‘[^’\n]*’/gu, " ")
+  .replace(/「[^」\n]*」/gu, " ")
+  .replace(/『[^』\n]*』/gu, " ")
+  .replace(/`[^`\n]*`/gu, " ");
 
 const USER_CORRECTION = [
   /(?:그게|그건)\s*아니|내가\s*(?:말|요청)한\s*(?:건|것)/iu,
-  /(?:안|못)\s*(?:했|지켰|넣었|고쳤|따랐|반영)|(?:누락|무시|어겼|틀렸|빠뜨렸|빠졌)/iu,
+  /(?:너|네가|당신|에이전트가).{0,16}(?:안|못)\s*(?:했|지켰|넣었|고쳤|따랐|반영)|(?:안|못)\s*(?:했|지켰|넣었|고쳤|따랐|반영).{0,8}(?:잖아|잖아요|다니까|는데\s*왜)|(?:누락|무시|어겼|틀렸|빠뜨렸|빠트렸|빠졌)/iu,
   /(?:한다고|하겠다고|고친다고).*(?:해놓고|했는데|말하고)|(?:말만|설명만|사과만).*(?:하고|하지)/iu,
   /(?:하지\s*말(?:랬|라고)|누가.+하랬|허락\s*없이|맘대로)/iu,
   /(?:형식|포맷|언어|필드|키|순서|줄\s*수).*(?:안\s*맞|깨졌|틀렸|빠졌|돌아갔)/iu,
   /(?:that's not what i asked|i (?:already )?(?:said|asked)|told you not to|you were supposed to)/iu,
   /(?:i (?:already )?(?:told|answered) you|i (?:already )?answered (?:that|this)|you acknowledged.*(?:but|yet))/iu,
   /(?:links?|files?|pages?) you (?:gave|provided|linked).*(?:do(?:es)? not|don't|doesn't) exist|you (?:made|fabricated|invented) (?:them|it|that|this)(?: up)?|you (?:just )?(?:repeated|returned|output).*(?:identical|earlier|previous)/iu,
-  /(?:did(?:n't| not)|failed to|missed|ignored|violated|left out|not applied|still missing|you said.*(?:fixed|did))/iu,
+  /(?:you|it|that|this)\s+(?:\w+\s+){0,2}(?:did(?:n't| not)|failed to|missed|ignored|violated|left out)|i\s+did(?:n't| not)\s+(?:ask|tell|authorize|request|approve)|(?:not applied|still missing|you said.*(?:fixed|did))/iu,
   /(?:这|這)(?:不|並不)是我(?:让|讓)你|我(?:都|已经|已經)(?:说|說)(?:了|过|過)|不是(?:说|說)(?:过|過|已经|已經)|(?:让|讓|叫)你(?:别|不要|不)|你又(?:说|說)(?:做完|完成)/iu,
   /(?:没|沒)(?:做|改|加|保留|处理|處理|修好)|(?:漏掉|遗漏|遺漏|忽略|擅自|删了|刪了)/iu,
   /(?:我)?(?:刚才|剛才|已经|已經).*(?:回答|答)(?:过|過|了)|你(?:给|給|发|發)的(?:链接|連結|鏈接).*(?:不存在|无效|無效)|你(?:又)?(?:编|編|瞎编|瞎編|捏造)/iu,
@@ -24,8 +31,8 @@ const USER_CORRECTION = [
   /さっき(?:答え|回答し)ましたよね|あなたが.*リンク.*存在しません|(?:作り話|でっち上げ)(?:です|でしょう|だ)/iu,
   /(?:形式|フォーマット|言語|項目|順序).*(?:違|崩|戻|抜け)/iu,
 ];
-const RECURRENCE_MARKER = /(?:또|다시|계속|자꾸|여전히|몇\s*번|반복|again|still|keep|keeps|repeated|又|还|還|一直|总是|總是|反复|反覆|重复|重複|几次|幾次|また|まだ|何度|何回|繰り返|ずっと|元に戻)/iu;
-const FAILURE_ANCHOR = /(?:안\s*(?:했|됐|맞|지켰|넣|고쳤|따랐|반영)|못\s*(?:했|했어)|실패|오류|틀|누락|빠|무시|어겼|같은\s*(?:실수|질문|문제)|말만|물어|왔다\s*갔다|바뀌|되돌아|깨졌|did(?:n't| not)|failed|error|wrong|missed|ignored|same\s+(?:mistake|question|problem|thing)|still\s+(?:has|have|had)\s+not\s+changed|identical\s+(?:answer|response)|keeps?\s+(?:asking|changing)|back\s+and\s+forth|broke|错|錯|没|沒|失败|失敗|忽略|漏|同样|同樣|没有|沒有|删|刪|擅自|不存在|(?:瞎)?(?:编|編)|同じ\s*(?:ミス|間違い|質問|問題)|できていな|直っていな|無視|見落と|戻って|変え|謝るだけ|存在しません|作り話|でっち上げ)/iu;
+const RECURRENCE_MARKER = /(?:또|다시|계속|자꾸|여전히|몇\s*번|반복|again|still|keep|keeps|repeated|once\s+more|twice|又|还|還|一直|总是|總是|反复|反覆|重复|重複|几次|幾次|また|まだ|何度|何回|繰り返|ずっと|元に戻)/iu;
+const FAILURE_ANCHOR = /(?:안\s*(?:했|됐|맞|지켰|넣|고쳤|따랐|반영)|못\s*(?:했|했어)|실패|오류|틀렸|틀림|누락|빠뜨렸|빠트렸|빠졌|무시|어겼|같은\s*(?:실수|질문|문제)|말만|(?:자꾸|계속|왜).{0,8}물어|왔다\s*갔다|바뀌|되돌아|깨졌|(?:you|it|that|this)\s+(?:\w+\s+){0,2}did(?:n't| not)|failed|error|wrong|missed|ignored|same\s+(?:mistake|question|problem|thing)|identical\s+(?:answer|response|mistake)|still\s+(?:has|have|had)\s+not\s+changed|keeps?\s+(?:asking|changing)|back\s+and\s+forth|broke|错|錯|(?:没|沒)(?:有)?(?:做|改|加|修|弄|处理|處理)|失败|失敗|忽略|漏|同样|同樣|删|刪|擅自|不存在|(?:瞎)?(?:编|編)|同じ\s*(?:ミス|間違い|質問|問題)|できていな|直っていな|無視|見落と|戻って|変え|謝るだけ|存在しません|作り話|でっち上げ)/iu;
 const STRONG_RECURRENCE = [
   /(?:한다고|하겠다고|고친다고).*(?:또|여전히|그대로|안\s*(?:했|됐))/iu,
   /(?:하고도|해놓고|했는데도).*(?:안|못|또|여전히)/iu,
@@ -49,15 +56,15 @@ const USER_PROTEST = [
 ];
 const HEALTH_CHECK = [
   /(?:드리프트|대화\s*상태|세션\s*상태|정상이냐|새\s*세션|컴팩션).*(?:점검|어때|필요|해야|인가|이야|냐|까)/iu,
-  /(?:are (?:you|we) drifting|conversation health|session health|new session|should (?:we|i) compact)/iu,
+  /(?:are (?:you|we) drifting|has (?:this|the) conversation drifted|(?:assess|check) whether (?:this|the) conversation has drifted|conversation health|session health|should (?:we|i) compact|(?:should|do) (?:we|i) (?:start|need|use) (?:a )?new session)/iu,
   /(?:对话|對話|上下文).*(?:跑偏|偏了|有问题|有問題)|(?:需要|要不要).*(?:新对话|新對話|新会话|新會話)|(?:对话|對話|会话|會話|上下文).*(?:漂移).*(?:吗|么|？|检查|檢查|确认|確認)/iu,
-  /(?:会話|セッション).*(?:ずれて|おかしい|健全|状態)|(?:会話|セッション).*(?:ドリフト).*(?:か|？|確認|状態)|新しいセッション|コンパクションした方が/iu,
+  /(?:会話|セッション).*(?:ずれて|おかしい|健全|状態)|(?:会話|セッション).*(?:ドリフト).*(?:か|？|確認|状態)|新しいセッション.*(?:必要|始め|移る|方が|べき|ですか|ますか)|コンパクションした方が/iu,
 ];
 const TOOL_WORD = /(?:툴|도구|호출|명령|command|tool|call|mcp|工具|调用|調用|ツール|呼び出し)/iu;
-const TOOL_FAILURE = /(?:실패|오류|에러|failed|failure|error|失败|失敗|错误|錯誤|エラー)/iu;
-const TOOL_REPEAT = /(?:또|다시|계속|반복|같은|again|repeated|same|keep|又|还|還|重复|重複|また|何度|繰り返)/iu;
-const TOOL_DIAGNOSE = /(?:분석|점검|원인|왜|진단|analyse|analyze|diagnose|check|why|分析|检查|檢查|原因|为什么|為什麼|診断|なぜ|調べ)/iu;
-const OBSERVED_TOOL_FAILURE = /(?:실패(?:했|했습니다|했다|했어|했어요)|오류(?:가|도)?\s*(?:났|발생했)|\bfailed\b|(?:失败|失敗)(?:了|过|過)|(?:错误|錯誤)(?:了|发生|發生)|失敗(?:しました|した|している|しています)|エラー(?:が)?(?:出|発生)|エラーにな(?:った|りました))/iu;
+const TOOL_FAILURE = /(?:실패|오류|에러|시간\s*초과|failed|failure|error|timed?\s*out|timeout|失败|失敗|错误|錯誤|超时|超時|エラー|タイムアウト)/iu;
+const TOOL_REPEAT = /(?:또|다시|계속|반복|같은|두\s*번|again|repeated|same|keep|twice|once\s+more|又|还|還|重复|重複|两次|兩次|また|何度|二回)/iu;
+const TOOL_DIAGNOSE = /(?:분석|점검|원인|왜|진단|조사|analyse|analyze|diagnose|check|why|investigate|assess|分析|检查|檢查|原因|为什么|為什麼|调查|調查|診断|なぜ|調べ)/iu;
+const OBSERVED_TOOL_FAILURE = /(?:실패(?:했|했습니다|했다|했어|했어요)|오류(?:가|도)?\s*(?:났|발생했)|시간\s*초과|\bfailed\b|\btimed?\s*out\b|\btimeout\b|(?:失败|失敗)(?:了|过|過)|(?:错误|錯誤)(?:了|发生|發生)|(?:超时|超時)(?:了|发生|發生)?|失敗(?:しました|した|している|しています)|エラー(?:が)?(?:出|発生)|エラーにな(?:った|りました)|タイムアウト)/iu;
 const OBSERVED_SUCCESS = [
   /실패하지\s*않(?:았|았습|았다|았어|았어요)/iu,
   /\b(?:did not|didn't|has not|hasn't|have not|haven't)\s+fail(?:ed)?\b/iu,
@@ -72,14 +79,15 @@ const PROSPECTIVE_TEST_INSTRUCTION = [
 ];
 
 export const classifyUserPrompt = (value) => {
-  const text = normalized(value);
+  const text = stripQuotedSegments(normalized(value));
   const nonComplaint = testAny(OBSERVED_SUCCESS, text) || testAny(PROSPECTIVE_TEST_INSTRUCTION, text);
   const recurrence = !nonComplaint && (testAny(STRONG_RECURRENCE, text) || (RECURRENCE_MARKER.test(text) && FAILURE_ANCHOR.test(text)));
   return {
-    correction: !nonComplaint && testAny(USER_CORRECTION, text), recurrence, protest: !nonComplaint && testAny(USER_PROTEST, text),
+    correction: !nonComplaint && testAny(USER_CORRECTION, text),
+    recurrence,
+    protest: !nonComplaint && testAny(USER_PROTEST, text),
     explicitHealthCheck: testAny(HEALTH_CHECK, text),
     explicitToolDiagnosis: !nonComplaint && TOOL_WORD.test(text) && TOOL_FAILURE.test(text) && OBSERVED_TOOL_FAILURE.test(text) && TOOL_REPEAT.test(text) && TOOL_DIAGNOSE.test(text),
-    emphasis: /[!?]{3,}/u.test(text) || /(.)\1{4,}/u.test(text) || /\b[A-Z\s]{8,}\b/u.test(text),
   };
 };
 
