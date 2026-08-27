@@ -29,6 +29,14 @@ claude plugin validate .
 
 Behavior tests should preserve meaning and decisions rather than exact wording. Add or update the relevant multilingual cases when trigger coverage or user-visible guidance changes.
 
+Release evidence has three distinct gates:
+
+1. Deterministic unit tests run locally and in trusted CI without credentials.
+2. Real print-mode behavior is manually adjudicated against `evals/cases.json`; fixture or fake-adapter actions are not host evidence.
+3. Interactive Claude Code and Codex smoke runs follow [the release matrix](docs/release-smoke-test.md) and require explicit runtime approval.
+
+Credentialed/model-backed tests must never run in untrusted pull-request CI. Keep raw prompts, transcripts, host output, and path-bearing logs under `.kb.tmp/`, never in a commit.
+
 ## Pull requests
 
 Keep the diff limited to one problem. Explain the observed failure, the chosen correction, verification evidence, token impact, and any permission change. Update every affected localized README when commands, supported languages, safety claims, or behavior changes.

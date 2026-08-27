@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AI Safe Driver host smoke results",
+  "type": "object",
+  "required": ["host", "host_version", "os", "node_version", "results"],
+  "properties": {
+    "host": { "enum": ["claude-code", "codex"] },
+    "host_version": { "type": "string", "minLength": 1, "maxLength": 100 },
+    "os": { "type": "string", "minLength": 1, "maxLength": 100 },
+    "node_version": { "type": "string", "minLength": 1, "maxLength": 100 },
+    "results": {
+      "type": "array",
+      "minItems": 10,
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "required": ["id", "status"],
+        "properties": {
+          "id": {
+            "enum": [
+              "manifest-and-hook-trust",
+              "direct-visible-repeated-failure",
+              "correction-recurrence-wake",
+              "strict-json-output",
+              "manual-compact-reload",
+              "next-compact-transition",
+              "clear-transition",
+              "approval-rejection",
+              "no-node-limitation",
+              "bounded-payload"
+            ]
+          },
+          "status": { "enum": ["PASS", "FAIL", "BLOCKED"] },
+          "note": {
+            "type": "string",
+            "maxLength": 300,
+            "allOf": [
+              { "not": { "pattern": "[\\u0000-\\u001F\\u007F]" } },
+              { "not": { "pattern": "[/\\\\]" } },
+              { "not": { "pattern": "[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Pp][Rr][Oo][Mm][Pp][Tt]|[Tt][Rr][Aa][Nn][Ss][Cc][Rr][Ii][Pp][Tt]|[Ww][Oo][Rr][Kk][Ss][Pp][Aa][Cc][Ee]|[Pp][Rr][Oo][Ff][Ii][Ll][Ee]" } }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "allOf": [
+        { "contains": { "properties": { "id": { "const": "manifest-and-hook-trust" } }, "required": ["id"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "properties": { "id": { "const": "direct-visible-repeated-failure" } }, "required": ["id"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "properties": { "id": { "const": "correction-recurrence-wake" } }, "required": ["id"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "properties": { "id": { "const": "strict-json-output" } }, "required": ["id"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "properties": { "id": { "const": "manual-compact-reload" } }, "required": ["id"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "properties": { "id": { "const": "next-compact-transition" } }, "required": ["id"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "properties": { "id": { "const": "clear-transition" } }, "required": ["id"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "properties": { "id": { "const": "approval-rejection" } }, "required": ["id"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "properties": { "id": { "const": "no-node-limitation" } }, "required": ["id"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "properties": { "id": { "const": "bounded-payload" } }, "required": ["id"] }, "minContains": 1, "maxContains": 1 }
+      ]
+    }
+  },
+  "additionalProperties": false
+}

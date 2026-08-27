@@ -13,6 +13,10 @@ List the checks you ran and their results.
 - [ ] User-facing changes are aligned across the relevant localized README pages.
 - [ ] No hook, file write, retry, handover, compaction, clear, network access, or permission was added without documenting and testing its boundary.
 - [ ] Logs, fixtures, and examples contain no secrets or private conversation text.
+- [ ] Deterministic tests pass without credentials.
+- [ ] Any real print-mode behavior evidence was manually adjudicated; fake-adapter results are labeled harness-only.
+- [ ] Required interactive Claude Code and Codex smoke rows are recorded as PASS, FAIL, or BLOCKED using `docs/release-smoke-test.md`.
+- [ ] Credentialed/model-backed tests were not run in untrusted pull-request CI and had explicit runtime approval if run elsewhere.
 
 ## User-visible change
 
