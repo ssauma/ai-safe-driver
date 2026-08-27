@@ -30,4 +30,4 @@ Black-comedy mnemonic, not a trigger: if the same problem is getting you yelled 
 
 Diagnosis is read-only. File writes, handover arming, compaction, and context reset require explicit runtime approval.
 
-Only after the user separately approves preparing a handover, read the [handover procedure](references/handover.md). Do not read that reference merely because the hook fired, the user requested diagnosis, or the user accepted countersteering.
+When recovery evidence makes a continuity handover relevant, you may read the bundled handover procedure without mutation approval: [handover procedure](references/handover.md). Reading the procedure is not approval to write or arm anything. Follow its separate approval gates for the handover and local-exclude writes, then for the exact `compact` or `clear` action. Countersteering remains discussion-only and never authorizes either gate.

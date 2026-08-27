@@ -31,6 +31,7 @@ test("ships one canonical skill for both hosts", () => {
     `${skillRoot}/agents/openai.yaml`,
     `${pluginRoot}/hooks/hooks.json`,
     `${pluginRoot}/scripts/drift-detector.mjs`,
+    `${pluginRoot}/scripts/arm-handover.mjs`,
     `${pluginRoot}/scripts/handover-core.mjs`,
     `${pluginRoot}/scripts/reinject-handover.mjs`,
     `${pluginRoot}/scripts/session-drift-hook.mjs`,
@@ -212,9 +213,9 @@ test("keeps the skill as a small router and loads details only when needed", () 
   assert.match(skill, /explicit (?:compaction|new-session) question/i);
   assert.match(skill, /\[recovery procedure\]\(references\/recovery\.md\)/i);
   assert.match(skill, /Do not read (?:it|the recovery procedure)[\s\S]{0,120}condition is confirmed/i);
-  assert.match(skill, /only after the user separately approves preparing a handover/i);
+  assert.match(skill, /may read the bundled handover procedure without mutation approval/i);
   assert.match(skill, /\[handover procedure\]\(references\/handover\.md\)/i);
-  assert.match(skill, /Do not read (?:that|the) reference merely because the hook fired/i);
+  assert.match(skill, /Reading the procedure is not approval to write or arm anything/i);
   assert.match(recovery, /^# Recovery procedure$/m);
   assert.match(recovery, /Recovery contract/);
   assert.match(recovery, /On-demand drift dashboard/);
@@ -560,6 +561,33 @@ test("defines an on-demand metaphorical dashboard and protects strict formats", 
   assert.match(skill, /Would you like me to countersteer\?/);
   assert.match(skill, /A yes authorizes that recovery discussion only/);
   assert.match(skill, /At `75%` or `100%`, put the countersteering question/);
+});
+
+test("documents deterministic handover checking and two separate mutation approvals", () => {
+  const skill = read(`${skillRoot}/SKILL.md`);
+  const handover = read(`${skillRoot}/references/handover.md`);
+  const armSource = read(`${pluginRoot}/scripts/arm-handover.mjs`);
+
+  assert.match(skill, /may read the bundled handover procedure without mutation approval/i);
+  assert.match(skill, /Countersteering remains discussion-only/i);
+  assert.match(handover, /exact handover path/i);
+  assert.match(handover, /content preview/i);
+  assert.match(handover, /local Git exclude path/i);
+  assert.match(handover, /ask before writing either file/i);
+  assert.match(handover, /arm-handover\.mjs"? --cwd .* --check/i);
+  assert.match(handover, /ask which exact transition to arm/i);
+  assert.match(handover, /--action compact/);
+  assert.match(handover, /--action clear/);
+  assert.doesNotMatch(handover, /Write `armed\.json` as one JSON object/i);
+  assert.doesNotMatch(handover, /"schema": "ai-safe-driver-handover-v1"/);
+
+  assert.match(armSource, /readBoundedRegularFile|readAndValidateHandover/);
+  assert.match(armSource, /open\(armedPath, "wx", 0o600\)/);
+  assert.match(armSource, /handle\.sync\(\)/);
+  assert.doesNotMatch(armSource, /git[^\n]*config/i);
+
+  const ignoreLines = read(".gitignore").split(/\r?\n/u);
+  assert.equal(ignoreLines.filter((line) => line === ".ai-safe-driver/").length, 1);
 });
 
 test("documents the bounded handover and compact delivery contract", () => {

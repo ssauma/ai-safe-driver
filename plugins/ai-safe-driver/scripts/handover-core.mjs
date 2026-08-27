@@ -98,6 +98,28 @@ export const validateHandoverDocument = ({ content, stat }) => {
   };
 };
 
+export const readAndValidateHandover = async ({
+  filePath,
+  openFlags,
+  openFile,
+  lstatPath,
+}) => {
+  const file = await readBoundedRegularFile({
+    filePath,
+    label: "handover",
+    maxBytes: MAX_HANDOVER_BYTES,
+    openFlags,
+    openFile,
+    lstatPath,
+  });
+  const content = file.bytes.toString("utf8");
+  return {
+    content,
+    stat: file.stat,
+    ...validateHandoverDocument({ content, stat: file.stat }),
+  };
+};
+
 export const validateApproval = ({ approval, source, digest, now }) => {
   const createdAt = Date.parse(approval.created_at);
   const expiresAt = Date.parse(approval.expires_at);
