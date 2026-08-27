@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, opendir, readdir, rename, rm } from "node:fs/promises";
+import { lstat, mkdir, open, opendir, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import {
   STATE_SCHEMA,
@@ -15,6 +15,8 @@ import { resolveStateRoot } from "./runtime-paths.mjs";
 
 const MAX_INPUT_BYTES = 256 * 1024;
 const MAX_CONTEXT_BYTES = 320;
+const MAX_STATE_PRUNE_INSPECTIONS = 64;
+const STATE_PRUNE_BUDGET_MS = 25;
 const LOCK_LEASE_MS = 30 * 1000;
 const RECLAIM_GUARD_LEASE_MS = LOCK_LEASE_MS;
 const MAX_RECLAIMER_GUARD_CLEANUP = 64;
@@ -233,25 +235,34 @@ const writeStateAtomically = async (id, state) => {
 
 const pruneExpired = async () => {
   await ensureRoot();
-  const entries = await readdir(root, { withFileTypes: true });
-  for (const entry of entries) {
-    if (!entry.name.endsWith(".json") || entry.isSymbolicLink() || !entry.isFile()) continue;
-    const file = path.join(root, entry.name);
-    try {
-      await withFileLock(file, async () => {
-        const record = await readStateFile(file);
-        if (!record || record.state.expiresAt > Date.now()) return;
-        await testBarrier("after-expired-state-read");
-        const current = await lstat(file);
-        if (!current.isFile() || current.isSymbolicLink()) return;
-        if (current.dev !== record.identity.dev || current.ino !== record.identity.ino) return;
-        await rm(file);
-      });
-    } catch (error) {
-      if (isMissing(error)) continue;
-      // A corrupt record must not suppress processing of independent sessions.
-      continue;
+  const startedAt = Date.now();
+  const directory = await opendir(root);
+  let inspected = 0;
+  try {
+    while (inspected < MAX_STATE_PRUNE_INSPECTIONS && Date.now() - startedAt < STATE_PRUNE_BUDGET_MS) {
+      const entry = await directory.read();
+      if (!entry) break;
+      inspected += 1;
+      if (!entry.name.endsWith(".json") || entry.isSymbolicLink() || !entry.isFile()) continue;
+      const file = path.join(root, entry.name);
+      try {
+        await withFileLock(file, async () => {
+          const record = await readStateFile(file);
+          if (!record || record.state.expiresAt > Date.now()) return;
+          await testBarrier("after-expired-state-read");
+          const current = await lstat(file);
+          if (!current.isFile() || current.isSymbolicLink()) return;
+          if (current.dev !== record.identity.dev || current.ino !== record.identity.ino) return;
+          await rm(file);
+        });
+      } catch (error) {
+        if (isMissing(error)) continue;
+        // A corrupt record must not suppress processing of independent sessions.
+        continue;
+      }
     }
+  } finally {
+    await directory.close();
   }
 };
 

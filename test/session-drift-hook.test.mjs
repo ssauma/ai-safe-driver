@@ -316,6 +316,27 @@ test("expired state is pruned without creating a record for a neutral prompt", (
   assert.deepEqual(readdirSync(root), []);
 });
 
+test("expired-state cleanup inspects a bounded number of records on a health-check prompt", () => {
+  const root = makeStateDir("bounded-expired");
+  const expiredFiles = Array.from({ length: 200 }, (_, index) => path.join(
+    root,
+    `expired-${String(index).padStart(3, "0")}.json`,
+  ));
+  for (const file of expiredFiles) {
+    writeFileSync(file, JSON.stringify(plainState({ expiresAt: Date.now() - 1 })), { mode: 0o600 });
+  }
+  const beforeCount = expiredFiles.filter(existsSync).length;
+
+  const result = runDriftHook(root, {
+    hook_event_name: "UserPromptSubmit", session_id: "bounded-health-check", prompt: "Are we drifting?",
+  });
+  assertSucceeded(result);
+  const afterCount = expiredFiles.filter(existsSync).length;
+  assert.ok(beforeCount - afterCount >= 1);
+  assert.ok(beforeCount - afterCount <= 64);
+  assertLightweightRecoveryContext(JSON.parse(result.stdout).hookSpecificOutput.additionalContext);
+});
+
 test("a symlinked state file is rejected without following or replacing it", () => {
   const root = makeStateDir("symlink-file");
   const sessionId = "session-symlink";
