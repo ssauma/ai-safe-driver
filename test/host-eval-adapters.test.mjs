@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, cpSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -54,14 +54,40 @@ function claudeSuccess(result = "answer", overrides = {}) {
   return {
     type: "result",
     subtype: "success",
+    uuid: "10000000-0000-4000-8000-000000000000",
+    session_id: "00000000-0000-4000-8000-000000000000",
     is_error: false,
     duration_ms: 10,
     duration_api_ms: 8,
     num_turns: 1,
     result,
-    session_id: "00000000-0000-4000-8000-000000000000",
+    stop_reason: "end_turn",
     total_cost_usd: 0.01,
-    usage: { input_tokens: 1, output_tokens: 1 },
+    usage: {
+      input_tokens: 1,
+      output_tokens: 1,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+      cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 },
+      server_tool_use: { web_search_requests: 0, web_fetch_requests: 0 },
+      service_tier: "standard",
+      speed: "standard",
+      inference_geo: "",
+      iterations: [],
+    },
+    modelUsage: {
+      "claude-sonnet-4-6": {
+        inputTokens: 1,
+        outputTokens: 1,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        webSearchRequests: 0,
+        costUSD: 0.01,
+        contextWindow: 200000,
+        maxOutputTokens: 64000,
+      },
+    },
+    permission_denials: [],
     ...overrides,
   };
 }
@@ -85,49 +111,67 @@ const request = {
   turns: [{ role: "user", content: "SYNTHETIC_PRIVATE_PROMPT" }],
 };
 
-test("Claude command uses bare mode, canonical distinct profiles, and only the canonical plugin in skill mode", () => {
+test("Claude creates fresh isolated attempts and invokes only the skill arm explicitly", () => {
   const executable = fixture("claude-fixture", "process.stdout.write('{}')");
-  const baselineConfigDir = path.join(area(), "claude-baseline");
-  const skillConfigDir = path.join(area(), "claude-skill");
+  const baselineRuntimeRoot = path.join(area(), "claude-baseline");
+  const skillRuntimeRoot = path.join(area(), "claude-skill");
   const otherConfigDir = path.join(area(), "claude-normal");
-  mkdirSync(baselineConfigDir);
-  mkdirSync(skillConfigDir);
+  mkdirSync(baselineRuntimeRoot);
+  mkdirSync(skillRuntimeRoot);
   mkdirSync(otherConfigDir);
   const shared = {
     executable,
     pluginDir,
-    baselineConfigDir,
-    skillConfigDir,
+    baselineRuntimeRoot,
+    skillRuntimeRoot,
     baselineAcknowledgement: "1",
     skillAcknowledgement: "1",
     normalConfigDir: otherConfigDir,
   };
-  assert.deepEqual(buildClaudeCommand({ ...shared, mode: "baseline" }), {
-    executable,
-    args: ["--bare", "-p", "--no-session-persistence", "--output-format", "json"],
-    configDir: realpathSync(baselineConfigDir),
-  });
-  assert.deepEqual(buildClaudeCommand({ ...shared, mode: "skill" }), {
-    executable,
-    args: ["--bare", "-p", "--no-session-persistence", "--output-format", "json", "--plugin-dir", realpathSync(pluginDir)],
-    configDir: realpathSync(skillConfigDir),
-  });
-  assert.throws(() => buildClaudeCommand({ ...shared, mode: "skill", skillConfigDir: baselineConfigDir }), /distinct/iu);
+  const baseline = buildClaudeCommand({ ...shared, mode: "baseline" });
+  const baselineAgain = buildClaudeCommand({ ...shared, mode: "baseline" });
+  const skill = buildClaudeCommand({ ...shared, mode: "skill" });
+  assert.deepEqual(baseline.args, ["-p", "--no-session-persistence", "--output-format", "json"]);
+  assert.deepEqual(skill.args, ["-p", "--no-session-persistence", "--output-format", "json", "--plugin-dir", realpathSync(pluginDir)]);
+  assert.doesNotMatch(baseline.args.join(" "), /--bare|plugin-dir/iu);
+  assert.doesNotMatch(skill.args.join(" "), /--bare/iu);
+  assert.ok(baseline.configDir.startsWith(`${realpathSync(baselineRuntimeRoot)}${path.sep}`));
+  assert.ok(baseline.workingDirectory.startsWith(`${realpathSync(baselineRuntimeRoot)}${path.sep}`));
+  assert.ok(skill.configDir.startsWith(`${realpathSync(skillRuntimeRoot)}${path.sep}`));
+  assert.notEqual(baseline.configDir, baselineAgain.configDir);
+  assert.notEqual(baseline.workingDirectory, baselineAgain.workingDirectory);
+  assert.equal(readdirSync(baseline.configDir).length, 0);
+  assert.equal(readdirSync(baseline.workingDirectory).length, 0);
+  assert.throws(() => buildClaudeCommand({ ...shared, mode: "skill", skillRuntimeRoot: baselineRuntimeRoot }), /distinct/iu);
   assert.throws(() => buildClaudeCommand({ ...shared, mode: "skill", skillAcknowledgement: "" }), /isolated/iu);
-  assert.throws(() => buildClaudeCommand({ ...shared, mode: "baseline", normalConfigDir: baselineConfigDir }), /normal/iu);
+  assert.throws(() => buildClaudeCommand({ ...shared, mode: "baseline", normalConfigDir: baselineRuntimeRoot }), /normal/iu);
   const otherPlugin = area();
   assert.throws(() => buildClaudeCommand({ ...shared, mode: "skill", pluginDir: otherPlugin }), /canonical plugin/iu);
-  writeFileSync(path.join(baselineConfigDir, "stale-settings.json"), "{}");
-  assert.throws(() => buildClaudeCommand({ ...shared, mode: "baseline" }), /fresh|empty|contaminated/iu);
+
+  const relativeCwd = area();
+  const relativeRoot = path.join(relativeCwd, "normal-alias");
+  mkdirSync(relativeRoot);
+  assert.throws(() => buildClaudeCommand({
+    ...shared,
+    mode: "baseline",
+    baselineRuntimeRoot: relativeRoot,
+    normalConfigDir: "normal-alias",
+    hostCwd: relativeCwd,
+  }), /normal/iu);
 });
 
-test("Codex command is ephemeral JSONL, reads stdin, and requires an acknowledged isolated profile", () => {
+test("Codex clones immutable seeds into fresh per-attempt homes", () => {
   const executable = fixture("codex-fixture", "process.stdout.write('{}')");
   const baselineHome = path.join(area(), "baseline-home");
   const skillHome = path.join(area(), "skill-home");
+  const baselineRuntimeRoot = path.join(area(), "baseline-runtime");
+  const skillRuntimeRoot = path.join(area(), "skill-runtime");
   mkdirSync(baselineHome);
   mkdirSync(skillHome);
+  mkdirSync(baselineRuntimeRoot);
+  mkdirSync(skillRuntimeRoot);
   provisionCodexSkillProfile(skillHome);
+  const runtimeRoots = { baselineRuntimeRoot, skillRuntimeRoot };
 
   const baseline = buildCodexCommand({
     executable,
@@ -135,6 +179,7 @@ test("Codex command is ephemeral JSONL, reads stdin, and requires an acknowledge
     repositoryRoot,
     baselineCodexHome: baselineHome,
     skillCodexHome: skillHome,
+    ...runtimeRoots,
     baselineAcknowledgement: "1",
     skillAcknowledgement: "1",
   });
@@ -144,22 +189,35 @@ test("Codex command is ephemeral JSONL, reads stdin, and requires an acknowledge
     repositoryRoot,
     baselineCodexHome: baselineHome,
     skillCodexHome: skillHome,
+    ...runtimeRoots,
     baselineAcknowledgement: "1",
     skillAcknowledgement: "1",
   });
-  assert.deepEqual(baseline, {
-    executable,
-    args: ["exec", "--ephemeral", "--json", "-C", repositoryRoot, "-"],
-    codexHome: realpathSync(baselineHome),
-  });
-  assert.deepEqual(skill, { ...baseline, codexHome: realpathSync(skillHome) });
+  assert.deepEqual(baseline.args, ["exec", "--ephemeral", "--json", "-C", repositoryRoot, "-"]);
+  assert.deepEqual(skill.args, baseline.args);
+  assert.ok(baseline.codexHome.startsWith(`${realpathSync(baselineRuntimeRoot)}${path.sep}`));
+  assert.ok(skill.codexHome.startsWith(`${realpathSync(skillRuntimeRoot)}${path.sep}`));
+  assert.equal(readdirSync(baseline.codexHome).length, 0);
+  assert.ok(existsSync(path.join(skill.codexHome, "config.toml")));
   assert.notEqual(baseline.codexHome, skill.codexHome);
+  const baselineAgain = buildCodexCommand({
+    executable,
+    mode: "baseline",
+    repositoryRoot,
+    baselineCodexHome: baselineHome,
+    skillCodexHome: skillHome,
+    ...runtimeRoots,
+    baselineAcknowledgement: "1",
+    skillAcknowledgement: "1",
+  });
+  assert.notEqual(baseline.codexHome, baselineAgain.codexHome);
   assert.throws(() => buildCodexCommand({
     executable,
     mode: "skill",
     repositoryRoot,
     baselineCodexHome: baselineHome,
     skillCodexHome: skillHome,
+    ...runtimeRoots,
     baselineAcknowledgement: "1",
     skillAcknowledgement: "",
   }), /isolated/iu);
@@ -169,6 +227,7 @@ test("Codex command is ephemeral JSONL, reads stdin, and requires an acknowledge
     repositoryRoot: "relative/repository",
     baselineCodexHome: baselineHome,
     skillCodexHome: skillHome,
+    ...runtimeRoots,
     baselineAcknowledgement: "1",
     skillAcknowledgement: "1",
   }), /absolute/iu);
@@ -178,6 +237,7 @@ test("Codex command is ephemeral JSONL, reads stdin, and requires an acknowledge
     repositoryRoot,
     baselineCodexHome: baselineHome,
     skillCodexHome: baselineHome,
+    ...runtimeRoots,
     baselineAcknowledgement: "1",
     skillAcknowledgement: "1",
   }), /distinct/iu);
@@ -187,6 +247,7 @@ test("Codex command is ephemeral JSONL, reads stdin, and requires an acknowledge
     repositoryRoot,
     baselineCodexHome: baselineHome,
     skillCodexHome: skillHome,
+    ...runtimeRoots,
     baselineAcknowledgement: "1",
     skillAcknowledgement: "1",
     normalCodexHome: baselineHome,
@@ -205,10 +266,12 @@ test("Codex command is ephemeral JSONL, reads stdin, and requires an acknowledge
     repositoryRoot,
     baselineCodexHome: baselineHome,
     skillCodexHome: path.join(alias, "profile"),
+    ...runtimeRoots,
     baselineAcknowledgement: "1",
     skillAcknowledgement: "1",
   });
-  assert.equal(canonical.codexHome, realpathSync(physicalProfile));
+  assert.ok(canonical.codexHome.startsWith(`${realpathSync(skillRuntimeRoot)}${path.sep}`));
+  assert.ok(existsSync(path.join(canonical.codexHome, "config.toml")));
 
   writeFileSync(path.join(baselineHome, "config.toml"), "[plugins.\"other@market\"]\nenabled = true\n");
   assert.throws(() => buildCodexCommand({
@@ -217,6 +280,7 @@ test("Codex command is ephemeral JSONL, reads stdin, and requires an acknowledge
     repositoryRoot,
     baselineCodexHome: baselineHome,
     skillCodexHome: skillHome,
+    ...runtimeRoots,
     baselineAcknowledgement: "1",
     skillAcknowledgement: "1",
   }), /fresh|empty|contaminated/iu);
@@ -227,6 +291,7 @@ test("Codex command is ephemeral JSONL, reads stdin, and requires an acknowledge
     repositoryRoot,
     baselineCodexHome: area(),
     skillCodexHome: skillHome,
+    ...runtimeRoots,
     baselineAcknowledgement: "1",
     skillAcknowledgement: "1",
   }), /unexpected|contaminated/iu);
@@ -247,6 +312,7 @@ enabled = false
     repositoryRoot,
     baselineCodexHome: area(),
     skillCodexHome: disabledSkillHome,
+    ...runtimeRoots,
     baselineAcknowledgement: "1",
     skillAcknowledgement: "1",
   }), /unexpected|contaminated/iu);
@@ -269,21 +335,51 @@ enabled = false
     repositoryRoot,
     baselineCodexHome: area(),
     skillCodexHome: fabricatedSkillHome,
+    ...runtimeRoots,
     baselineAcknowledgement: "1",
     skillAcknowledgement: "1",
   }), /unexpected|contaminated/iu);
+
+  const relativeCwd = area();
+  const relativeRoot = path.join(relativeCwd, "normal-alias");
+  mkdirSync(relativeRoot);
+  assert.throws(() => buildCodexCommand({
+    executable,
+    mode: "baseline",
+    repositoryRoot,
+    baselineCodexHome: baselineHome,
+    skillCodexHome: skillHome,
+    baselineRuntimeRoot: relativeRoot,
+    skillRuntimeRoot,
+    baselineAcknowledgement: "1",
+    skillAcknowledgement: "1",
+    normalCodexHome: "normal-alias",
+    hostCwd: relativeCwd,
+  }), /normal/iu);
 });
 
 test("documented Claude JSON and Codex JSONL response shapes parse to safe observations", () => {
-  assert.deepEqual(parseClaudeOutput(JSON.stringify(claudeSuccess())), {
+  assert.deepEqual(parseClaudeOutput(JSON.stringify(claudeSuccess("answer", {
+    api_error_status: null,
+    origin: { kind: "human" },
+    user_message_uuid: "20000000-0000-4000-8000-000000000000",
+    request_sent_wall_ms: 7,
+    fast_mode_state: "off",
+    fast_mode_disabled_reason: "sdk_opt_in_required",
+    future_optional_field: { ignored: true },
+  }))), {
     response: "answer",
     events: [],
   });
   const parsed = parseCodexOutput([
     JSON.stringify({ type: "thread.started", thread_id: "opaque" }),
     JSON.stringify({ type: "turn.started" }),
-    JSON.stringify({ type: "item.completed", item: { id: "opaque", type: "collab_tool_call", status: "completed" } }),
-    JSON.stringify({ type: "item.completed", item: { id: "opaque", type: "agent_message", text: "answer" } }),
+    JSON.stringify({ type: "item.started", item: { id: "collab-1", type: "collab_tool_call", status: "in_progress" } }),
+    JSON.stringify({ type: "item.updated", item: { id: "collab-1", type: "collab_tool_call", status: "in_progress" } }),
+    JSON.stringify({ type: "item.completed", item: { id: "collab-1", type: "collab_tool_call", status: "completed" } }),
+    JSON.stringify({ type: "item.completed", item: { id: "warning-1", type: "error", message: "nonfatal warning" } }),
+    JSON.stringify({ type: "item.completed", item: { id: "message-1", type: "agent_message", text: "intermediate" } }),
+    JSON.stringify({ type: "item.completed", item: { id: "message-2", type: "agent_message", text: "answer" } }),
     JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } }),
   ].join("\n"));
   assert.equal(parsed.response, "answer");
@@ -291,6 +387,8 @@ test("documented Claude JSON and Codex JSONL response shapes parse to safe obser
     "harness.codex_thread_started",
     "harness.codex_turn_started",
     "tool.codex_collab_call",
+    "harness.codex_item_error",
+    "harness.codex_agent_message",
     "harness.codex_agent_message",
     "harness.codex_turn_completed",
   ]);
@@ -306,8 +404,25 @@ test("parsers reject malformed, unexpected, failed, and missing-response records
     if (value === undefined) delete record.is_error;
     assert.throws(() => parseClaudeOutput(JSON.stringify(record)), /(?:failed|unexpected)/iu);
   }
+  for (const required of ["uuid", "stop_reason", "modelUsage", "permission_denials"]) {
+    const record = claudeSuccess();
+    delete record[required];
+    assert.throws(() => parseClaudeOutput(JSON.stringify(record)), /unexpected/iu, required);
+  }
   assert.throws(() => parseClaudeOutput(JSON.stringify(claudeSuccess("answer", { duration_ms: "10" }))), /unexpected/iu);
-  assert.throws(() => parseClaudeOutput(JSON.stringify({ ...claudeSuccess(), raw_extra: "private" })), /unexpected/iu);
+  assert.throws(() => parseClaudeOutput(JSON.stringify(claudeSuccess("answer", { total_cost_usd: null }))), /unexpected/iu);
+  assert.throws(() => parseClaudeOutput(JSON.stringify(claudeSuccess("answer", {
+    usage: { ...claudeSuccess().usage, cache_creation: null },
+  }))), /unexpected/iu);
+  const invalidModelUsage = structuredClone(claudeSuccess());
+  delete invalidModelUsage.modelUsage["claude-sonnet-4-6"].maxOutputTokens;
+  assert.throws(() => parseClaudeOutput(JSON.stringify(invalidModelUsage)), /unexpected/iu);
+  assert.throws(() => parseClaudeOutput(JSON.stringify(claudeSuccess("answer", {
+    permission_denials: [{ tool_name: "Bash", tool_use_id: "id" }],
+  }))), /unexpected/iu);
+  assert.throws(() => parseClaudeOutput(JSON.stringify(claudeSuccess("answer", { permission_denials_count: 0 }))), /unexpected/iu);
+  assert.throws(() => parseClaudeOutput(JSON.stringify(claudeSuccess("answer", { api_error_status: 500 }))), /unexpected|failed/iu);
+  assert.doesNotThrow(() => parseClaudeOutput(JSON.stringify({ ...claudeSuccess(), raw_extra: "future-value" })));
   assert.throws(() => parseCodexOutput("not jsonl"), /malformed/iu);
   assert.throws(() => parseCodexOutput(JSON.stringify({ type: "future.event" })), /unexpected/iu);
   assert.throws(() => parseCodexOutput(JSON.stringify({ type: "turn.failed", error: { message: "raw" } })), /failed/iu);
@@ -328,19 +443,61 @@ test("parsers reject malformed, unexpected, failed, and missing-response records
     JSON.stringify({ type: "turn.completed" }),
     JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "answer" } }),
   ].join("\n")), /order/iu);
-  assert.throws(() => parseCodexOutput([
+  assert.deepEqual(parseCodexOutput([
     JSON.stringify({ type: "thread.started", thread_id: "opaque" }),
     JSON.stringify({ type: "turn.started" }),
-    JSON.stringify({ type: "item.completed", item: { type: "error", message: "SYNTHETIC_PRIVATE_ERROR" } }),
+    JSON.stringify({ type: "item.completed", item: { id: "warning-1", type: "error", message: "SYNTHETIC_PRIVATE_ERROR" } }),
+    JSON.stringify({ type: "item.completed", item: { id: "message-1", type: "agent_message", text: "answer" } }),
     JSON.stringify({ type: "turn.completed" }),
-  ].join("\n")), (error) => /item failure/iu.test(error.message) && !/SYNTHETIC|PRIVATE/iu.test(error.message));
-  assert.throws(() => parseCodexOutput([
+  ].join("\n")), {
+    response: "answer",
+    events: [
+      "harness.codex_thread_started",
+      "harness.codex_turn_started",
+      "harness.codex_item_error",
+      "harness.codex_agent_message",
+      "harness.codex_turn_completed",
+    ],
+  });
+  assert.deepEqual(parseCodexOutput([
     JSON.stringify({ type: "thread.started", thread_id: "opaque" }),
     JSON.stringify({ type: "turn.started" }),
-    JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "first" } }),
-    JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "second" } }),
+    JSON.stringify({ type: "item.completed", item: { id: "message-1", type: "agent_message", text: "first" } }),
+    JSON.stringify({ type: "item.completed", item: { id: "message-2", type: "agent_message", text: "second" } }),
     JSON.stringify({ type: "turn.completed" }),
-  ].join("\n")), /unexpected response/iu);
+  ].join("\n")).response, "second");
+
+  const lifecycleEnvelope = (records) => [
+    JSON.stringify({ type: "thread.started", thread_id: "opaque" }),
+    JSON.stringify({ type: "turn.started" }),
+    ...records.map((record) => JSON.stringify(record)),
+    JSON.stringify({ type: "item.completed", item: { id: "message-final", type: "agent_message", text: "answer" } }),
+    JSON.stringify({ type: "turn.completed" }),
+  ].join("\n");
+  assert.throws(() => parseCodexOutput(lifecycleEnvelope([
+    { type: "item.started", item: { type: "command_execution" } },
+  ])), /item|record/iu);
+  assert.throws(() => parseCodexOutput(lifecycleEnvelope([
+    { type: "item.updated", item: { id: "tool-1", type: "command_execution" } },
+  ])), /lifecycle|order/iu);
+  assert.throws(() => parseCodexOutput(lifecycleEnvelope([
+    { type: "item.completed", item: { id: "tool-1", type: "command_execution" } },
+  ])), /lifecycle|order/iu);
+  assert.throws(() => parseCodexOutput(lifecycleEnvelope([
+    { type: "item.started", item: { id: "tool-1", type: "command_execution" } },
+    { type: "item.updated", item: { id: "tool-1", type: "file_change" } },
+  ])), /lifecycle|type/iu);
+  assert.throws(() => parseCodexOutput(lifecycleEnvelope([
+    { type: "item.started", item: { id: "tool-1", type: "command_execution" } },
+    { type: "item.completed", item: { id: "tool-1", type: "command_execution" } },
+    { type: "item.completed", item: { id: "tool-1", type: "command_execution" } },
+  ])), /lifecycle|terminal|duplicate/iu);
+  assert.throws(() => parseCodexOutput(lifecycleEnvelope([
+    { type: "item.completed", item: { id: "message-final", type: "agent_message", text: "first" } },
+  ])), /lifecycle|terminal|duplicate/iu);
+  assert.throws(() => parseCodexOutput(lifecycleEnvelope([
+    { type: "item.started", item: { id: "tool-1", type: "command_execution" } },
+  ])), /lifecycle|unfinished/iu);
 });
 
 test("environment policy forwards only operational values, direct API auth, and proxies", () => {
@@ -427,21 +584,31 @@ setInterval(() => {}, 1000);`);
   }), (error) => error instanceof HostAdapterBlockedError && error.code === "HOST_ADAPTER_BLOCKED" && /Windows/iu.test(error.message));
 });
 
-test("real adapters send prompts through stdin and return no semantic actions", async () => {
-  const claude = fixture("claude-ok", `let input = "";
+test("real adapters use a fresh runtime profile on every baseline and skill attempt", async () => {
+  const claudeCapture = path.join(area(), "claude-attempts.jsonl");
+  const claude = fixture("claude-ok", `const fs = require("node:fs");
+let input = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => { input += chunk; });
-process.stdin.on("end", () => process.stdout.write(JSON.stringify(${JSON.stringify(claudeSuccess("stdin-clean"))})));`);
-  const claudeBaseline = path.join(area(), "claude-baseline");
-  const claudeSkill = path.join(area(), "claude-skill");
-  mkdirSync(claudeBaseline);
-  mkdirSync(claudeSkill);
+process.stdin.on("end", () => {
+  fs.writeFileSync(process.env.CLAUDE_CONFIG_DIR + "/runtime-state.json", "{}");
+  fs.appendFileSync(${JSON.stringify(claudeCapture)}, JSON.stringify({
+    args: process.argv.slice(2), input, configDir: process.env.CLAUDE_CONFIG_DIR,
+    home: process.env.HOME, pluginData: process.env.PLUGIN_DATA,
+    compatibilityPluginData: process.env.CLAUDE_PLUGIN_DATA, cwd: process.cwd(),
+  }) + "\\n");
+  process.stdout.write(JSON.stringify(${JSON.stringify(claudeSuccess("stdin-clean"))}));
+});`);
+  const claudeBaselineRoot = area();
+  const claudeSkillRoot = area();
   await withEnvironment({
     AI_SAFE_DRIVER_CLAUDE_EXECUTABLE: claude,
-    AI_SAFE_DRIVER_CLAUDE_BASELINE_CONFIG_DIR: claudeBaseline,
-    AI_SAFE_DRIVER_CLAUDE_SKILL_CONFIG_DIR: claudeSkill,
-    AI_SAFE_DRIVER_CLAUDE_BASELINE_CONFIG_ISOLATED: "1",
-    AI_SAFE_DRIVER_CLAUDE_SKILL_CONFIG_ISOLATED: "1",
+    AI_SAFE_DRIVER_CLAUDE_BASELINE_RUNTIME_ROOT: claudeBaselineRoot,
+    AI_SAFE_DRIVER_CLAUDE_SKILL_RUNTIME_ROOT: claudeSkillRoot,
+    AI_SAFE_DRIVER_CLAUDE_BASELINE_RUNTIME_ROOT_ISOLATED: "1",
+    AI_SAFE_DRIVER_CLAUDE_SKILL_RUNTIME_ROOT_ISOLATED: "1",
+    AI_SAFE_DRIVER_CLAUDE_BASELINE_CONFIG_DIR: undefined,
+    AI_SAFE_DRIVER_CLAUDE_SKILL_CONFIG_DIR: undefined,
     ANTHROPIC_API_KEY: "SYNTHETIC_DIRECT_KEY",
     ANTHROPIC_AUTH_TOKEN: undefined,
     ANTHROPIC_BASE_URL: undefined,
@@ -452,29 +619,57 @@ process.stdin.on("end", () => process.stdout.write(JSON.stringify(${JSON.stringi
     CLAUDE_CODE_USE_VERTEX: undefined,
     CLAUDE_CONFIG_DIR: undefined,
   }, async () => {
-    const result = await runClaude({ ...request, mode: "baseline" });
-    assert.equal(result.response, "stdin-clean");
-    assert.equal("actions" in result, false);
+    for (const mode of ["baseline", "baseline", "skill", "skill"]) {
+      const result = await runClaude({ ...request, mode });
+      assert.equal(result.response, "stdin-clean");
+      assert.equal("actions" in result, false);
+    }
   });
+  const claudeAttempts = readFileSync(claudeCapture, "utf8").trim().split("\n").map(JSON.parse);
+  assert.equal(new Set(claudeAttempts.map(({ configDir }) => configDir)).size, 4);
+  assert.equal(new Set(claudeAttempts.map(({ home }) => home)).size, 4);
+  assert.equal(new Set(claudeAttempts.map(({ pluginData }) => pluginData)).size, 4);
+  assert.equal(new Set(claudeAttempts.map(({ cwd }) => cwd)).size, 4);
+  assert.ok(claudeAttempts.every(({ pluginData, compatibilityPluginData }) => pluginData === compatibilityPluginData));
+  for (const attempt of claudeAttempts.slice(0, 2)) {
+    assert.equal(attempt.input, "SYNTHETIC_PRIVATE_PROMPT");
+    assert.doesNotMatch(attempt.args.join(" "), /plugin-dir|--bare/iu);
+  }
+  for (const attempt of claudeAttempts.slice(2)) {
+    assert.equal(attempt.input, "/ai-safe-driver:ai-safe-driver SYNTHETIC_PRIVATE_PROMPT");
+    assert.deepEqual(attempt.args.slice(-2), ["--plugin-dir", realpathSync(pluginDir)]);
+    assert.doesNotMatch(attempt.args.join(" "), /--bare/iu);
+  }
 
-  const codex = fixture("codex-ok", `let input = "";
+  const codexCapture = path.join(area(), "codex-attempts.jsonl");
+  const codex = fixture("codex-ok", `const fs = require("node:fs");
+let input = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => { input += chunk; });
 process.stdin.on("end", () => {
+  fs.writeFileSync(process.env.CODEX_HOME + "/state.sqlite", "runtime");
+  fs.appendFileSync(${JSON.stringify(codexCapture)}, JSON.stringify({
+    input, codexHome: process.env.CODEX_HOME, home: process.env.HOME,
+    seeded: fs.existsSync(process.env.CODEX_HOME + "/config.toml"),
+  }) + "\\n");
   process.stdout.write(JSON.stringify({ type: "thread.started", thread_id: "opaque" }) + "\\n");
   process.stdout.write(JSON.stringify({ type: "turn.started" }) + "\\n");
-  process.stdout.write(JSON.stringify({ type: "item.completed", item: { id: "opaque", type: "agent_message", text: input ? "stdin-ok" : "missing" } }) + "\\n");
+  process.stdout.write(JSON.stringify({ type: "item.completed", item: { id: "message-1", type: "agent_message", text: "intermediate" } }) + "\\n");
+  process.stdout.write(JSON.stringify({ type: "item.completed", item: { id: "message-2", type: "agent_message", text: input ? "stdin-ok" : "missing" } }) + "\\n");
   process.stdout.write(JSON.stringify({ type: "turn.completed" }) + "\\n");
 });`);
-  const baselineHome = path.join(area(), "codex-baseline");
-  const skillHome = path.join(area(), "codex-skill");
-  mkdirSync(baselineHome);
-  mkdirSync(skillHome);
-  provisionCodexSkillProfile(skillHome);
+  const baselineSeed = area();
+  const skillSeed = area();
+  const codexBaselineRoot = area();
+  const codexSkillRoot = area();
+  provisionCodexSkillProfile(skillSeed);
+  const skillSeedConfig = readFileSync(path.join(skillSeed, "config.toml"), "utf8");
   await withEnvironment({
     AI_SAFE_DRIVER_CODEX_EXECUTABLE: codex,
-    AI_SAFE_DRIVER_CODEX_BASELINE_HOME: baselineHome,
-    AI_SAFE_DRIVER_CODEX_SKILL_HOME: skillHome,
+    AI_SAFE_DRIVER_CODEX_BASELINE_HOME: baselineSeed,
+    AI_SAFE_DRIVER_CODEX_SKILL_HOME: skillSeed,
+    AI_SAFE_DRIVER_CODEX_BASELINE_RUNTIME_ROOT: codexBaselineRoot,
+    AI_SAFE_DRIVER_CODEX_SKILL_RUNTIME_ROOT: codexSkillRoot,
     AI_SAFE_DRIVER_CODEX_BASELINE_HOME_ISOLATED: "1",
     AI_SAFE_DRIVER_CODEX_SKILL_HOME_ISOLATED: "1",
     CODEX_API_KEY: "SYNTHETIC_DIRECT_KEY",
@@ -484,10 +679,18 @@ process.stdin.on("end", () => {
     AZURE_OPENAI_ENDPOINT: undefined,
     CODEX_HOME: undefined,
   }, async () => {
-    const result = await runCodex({ ...request, mode: "skill" });
-    assert.equal(result.response, "stdin-ok");
-    assert.equal("actions" in result, false);
+    for (const mode of ["baseline", "baseline", "skill", "skill"]) {
+      const result = await runCodex({ ...request, mode });
+      assert.equal(result.response, "stdin-ok");
+      assert.equal("actions" in result, false);
+    }
   });
+  const codexAttempts = readFileSync(codexCapture, "utf8").trim().split("\n").map(JSON.parse);
+  assert.equal(new Set(codexAttempts.map(({ codexHome }) => codexHome)).size, 4);
+  assert.equal(new Set(codexAttempts.map(({ home }) => home)).size, 4);
+  assert.deepEqual(codexAttempts.map(({ seeded }) => seeded), [false, false, true, true]);
+  assert.equal(readdirSync(baselineSeed).length, 0);
+  assert.equal(readFileSync(path.join(skillSeed, "config.toml"), "utf8"), skillSeedConfig);
 });
 
 test("adapters return redacted BLOCKED errors for unsupported or missing direct authentication", async () => {
@@ -600,9 +803,14 @@ test("release documentation separates deterministic, real print-mode, and intera
   assert.match(document, /\.kb\.tmp\/ASD-HOST-EVAL/u);
   assert.match(document, /AI_SAFE_DRIVER_CODEX_BASELINE_HOME_ISOLATED=1/u);
   assert.match(document, /AI_SAFE_DRIVER_CODEX_SKILL_HOME_ISOLATED=1/u);
-  assert.match(document, /AI_SAFE_DRIVER_CLAUDE_BASELINE_CONFIG_ISOLATED=1/u);
-  assert.match(document, /AI_SAFE_DRIVER_CLAUDE_SKILL_CONFIG_ISOLATED=1/u);
-  assert.match(document, /--bare/u);
+  assert.match(document, /AI_SAFE_DRIVER_CODEX_BASELINE_RUNTIME_ROOT/u);
+  assert.match(document, /AI_SAFE_DRIVER_CODEX_SKILL_RUNTIME_ROOT/u);
+  assert.match(document, /AI_SAFE_DRIVER_CLAUDE_BASELINE_RUNTIME_ROOT_ISOLATED=1/u);
+  assert.match(document, /AI_SAFE_DRIVER_CLAUDE_SKILL_RUNTIME_ROOT_ISOLATED=1/u);
+  assert.match(document, /\/ai-safe-driver:ai-safe-driver/u);
+  assert.match(document, /immutable.*seed.*fresh.*attempt/isu);
+  assert.match(document, /repeat.*fresh|fresh.*repeat/isu);
+  assert.doesNotMatch(document, /claude[^\n]*--bare/iu);
   assert.match(document, /ANTHROPIC_API_KEY.*CODEX_API_KEY/isu);
   assert.match(document, /HTTP_PROXY.*HTTPS_PROXY.*NO_PROXY/isu);
   assert.match(document, /enterprise provider.*BLOCKED/isu);

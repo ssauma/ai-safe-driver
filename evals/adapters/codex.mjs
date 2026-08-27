@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { lstatSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { cpSync, lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -29,7 +29,9 @@ const ITEM_EVENTS = new Map([
   ["web_search", "tool.codex_web_search"],
   ["todo_list", "harness.codex_todo_list"],
   ["collab_tool_call", "tool.codex_collab_call"],
+  ["error", "harness.codex_item_error"],
 ]);
+const TERMINAL_ONLY_ITEM_TYPES = new Set(["agent_message", "reasoning", "error"]);
 const UNSUPPORTED_PROVIDER_VARIABLES = [
   "OPENAI_API_KEY",
   "OPENAI_BASE_URL",
@@ -63,13 +65,18 @@ function assertExecutable(value) {
   }
 }
 
-function physicalDirectoryIfPresent(value) {
-  if (typeof value !== "string" || !path.isAbsolute(value)) return null;
+function physicalDirectoryIfPresent(value, hostCwd) {
+  if (typeof value !== "string" || value.length === 0) return null;
   try {
-    return statSync(value).isDirectory() ? realpathSync(value) : null;
+    const candidate = path.isAbsolute(value) ? value : path.resolve(hostCwd, value);
+    return statSync(candidate).isDirectory() ? realpathSync(candidate) : null;
   } catch {
     return null;
   }
+}
+
+function pathsOverlap(first, second) {
+  return first === second || first.startsWith(`${second}${path.sep}`) || second.startsWith(`${first}${path.sep}`);
 }
 
 function assertFreshEmptyBaseline(directory) {
@@ -202,6 +209,20 @@ function assertExpectedSkillProfile(directory) {
   }
 }
 
+function createCodexAttempt(runtimeRoot, skillSeed, mode) {
+  try {
+    const codexHome = mkdtempSync(path.join(runtimeRoot, "attempt-"));
+    if (mode === "skill") {
+      cpSync(path.join(skillSeed, "config.toml"), path.join(codexHome, "config.toml"));
+      cpSync(path.join(skillSeed, "plugins"), path.join(codexHome, "plugins"), { recursive: true });
+      assertExpectedSkillProfile(codexHome);
+    }
+    return codexHome;
+  } catch {
+    throw new HostAdapterBlockedError("Codex host run is BLOCKED because a fresh disposable attempt could not be provisioned");
+  }
+}
+
 function promptFor({ caseId, locale, mode, turns }) {
   assertMode(mode);
   if (typeof caseId !== "string" || !/^[a-z0-9-]{1,80}$/u.test(caseId)
@@ -224,34 +245,42 @@ export function buildCodexCommand({
   repositoryRoot = localRepositoryRoot,
   baselineCodexHome,
   skillCodexHome,
+  baselineRuntimeRoot,
+  skillRuntimeRoot,
   baselineAcknowledgement,
   skillAcknowledgement,
   normalCodexHome,
+  hostCwd = process.cwd(),
 }) {
   assertMode(mode);
   assertExecutable(executable);
   const absoluteRepositoryRoot = assertAbsoluteDirectory(repositoryRoot, "Codex repository root");
   const baseline = assertAbsoluteDirectory(baselineCodexHome, "Codex baseline profile");
   const skill = assertAbsoluteDirectory(skillCodexHome, "Codex skill profile");
+  const baselineRuntime = assertAbsoluteDirectory(baselineRuntimeRoot, "Codex baseline runtime root");
+  const skillRuntime = assertAbsoluteDirectory(skillRuntimeRoot, "Codex skill runtime root");
   if (baselineAcknowledgement !== "1" || skillAcknowledgement !== "1") {
-    throw new HostAdapterBlockedError("Codex host run is BLOCKED until both disposable profiles are acknowledged as isolated");
+    throw new HostAdapterBlockedError("Codex host run is BLOCKED until both immutable seeds and runtime roots are acknowledged as isolated");
   }
-  if (baseline === skill) {
-    throw new HostAdapterBlockedError("Codex baseline and skill profiles must be physically distinct");
+  const isolatedDirectories = [baseline, skill, baselineRuntime, skillRuntime];
+  if (isolatedDirectories.some((directory, index) => (
+    isolatedDirectories.slice(index + 1).some((other) => pathsOverlap(directory, other))
+  ))) {
+    throw new HostAdapterBlockedError("Codex baseline and skill seeds and runtime roots must be physically distinct");
   }
   const normalDirectories = [
-    physicalDirectoryIfPresent(normalCodexHome),
-    physicalDirectoryIfPresent(path.join(homedir(), ".codex")),
+    physicalDirectoryIfPresent(normalCodexHome, hostCwd),
+    physicalDirectoryIfPresent(path.join(homedir(), ".codex"), hostCwd),
   ].filter(Boolean);
-  if (normalDirectories.includes(baseline) || normalDirectories.includes(skill)) {
-    throw new HostAdapterBlockedError("Codex adapter refuses a normal profile");
+  if (normalDirectories.some((normal) => isolatedDirectories.some((directory) => pathsOverlap(normal, directory)))) {
+    throw new HostAdapterBlockedError("Codex adapter refuses a normal profile or its descendants");
   }
   assertFreshEmptyBaseline(baseline);
   assertExpectedSkillProfile(skill);
   return {
     executable,
     args: ["exec", "--ephemeral", "--json", "-C", absoluteRepositoryRoot, "-"],
-    codexHome: mode === "baseline" ? baseline : skill,
+    codexHome: createCodexAttempt(mode === "baseline" ? baselineRuntime : skillRuntime, skill, mode),
   };
 }
 
@@ -261,6 +290,7 @@ export function parseCodexOutput(output) {
   const events = [];
   let response;
   let completed = false;
+  const itemLifecycles = new Map();
 
   for (const [index, line] of lines.entries()) {
     let record;
@@ -288,6 +318,9 @@ export function parseCodexOutput(output) {
       events.push(RECORD_EVENTS.get(record.type));
       if (record.type === "turn.completed") {
         if (index !== lines.length - 1) throw new Error("Codex host returned records in an unexpected order");
+        if ([...itemLifecycles.values()].some(({ phase }) => phase !== "completed")) {
+          throw new Error("Codex host returned an unfinished item lifecycle");
+        }
         completed = true;
       }
       continue;
@@ -296,16 +329,39 @@ export function parseCodexOutput(output) {
       || record.item === null || typeof record.item !== "object" || Array.isArray(record.item)) {
       throw new Error("Codex host returned an unexpected JSONL record");
     }
-    if (record.item.type === "error") throw new Error("Codex host reported an item failure");
-    if (!ITEM_EVENTS.has(record.item.type)) throw new Error("Codex host returned an unexpected JSONL record");
-    if (record.type === "item.completed") {
-      events.push(ITEM_EVENTS.get(record.item.type));
-      if (record.item.type === "agent_message") {
-        if (typeof record.item.text !== "string" || response !== undefined) {
-          throw new Error("Codex host returned an unexpected response record");
-        }
-        response = record.item.text;
+    if (typeof record.item.id !== "string" || record.item.id.length < 1 || record.item.id.length > 128
+      || typeof record.item.type !== "string" || !ITEM_EVENTS.has(record.item.type)) {
+      throw new Error("Codex host returned an unexpected item record");
+    }
+    const existing = itemLifecycles.get(record.item.id);
+    if (existing !== undefined && existing.type !== record.item.type) {
+      throw new Error("Codex host returned a contradictory item lifecycle type");
+    }
+    if (record.type === "item.started") {
+      if (TERMINAL_ONLY_ITEM_TYPES.has(record.item.type) || existing !== undefined) {
+        throw new Error("Codex host returned an unexpected item lifecycle order");
       }
+      itemLifecycles.set(record.item.id, { type: record.item.type, phase: "started" });
+      continue;
+    }
+    if (record.type === "item.updated") {
+      if (TERMINAL_ONLY_ITEM_TYPES.has(record.item.type) || existing?.phase !== "started") {
+        throw new Error("Codex host returned an unexpected item lifecycle order");
+      }
+      continue;
+    }
+    if (TERMINAL_ONLY_ITEM_TYPES.has(record.item.type)) {
+      if (existing !== undefined) throw new Error("Codex host returned a duplicate terminal item lifecycle");
+    } else if (existing?.phase !== "started") {
+      throw new Error("Codex host returned an unexpected item lifecycle order");
+    }
+    itemLifecycles.set(record.item.id, { type: record.item.type, phase: "completed" });
+    events.push(ITEM_EVENTS.get(record.item.type));
+    if (record.item.type === "agent_message") {
+      if (typeof record.item.text !== "string") {
+        throw new Error("Codex host returned an unexpected response record");
+      }
+      response = record.item.text;
     }
   }
   if (!completed || response === undefined) throw new Error("Codex host did not return a completed response");
@@ -326,9 +382,12 @@ export async function run(request) {
     repositoryRoot: localRepositoryRoot,
     baselineCodexHome: process.env.AI_SAFE_DRIVER_CODEX_BASELINE_HOME,
     skillCodexHome: process.env.AI_SAFE_DRIVER_CODEX_SKILL_HOME,
+    baselineRuntimeRoot: process.env.AI_SAFE_DRIVER_CODEX_BASELINE_RUNTIME_ROOT,
+    skillRuntimeRoot: process.env.AI_SAFE_DRIVER_CODEX_SKILL_RUNTIME_ROOT,
     baselineAcknowledgement: process.env.AI_SAFE_DRIVER_CODEX_BASELINE_HOME_ISOLATED,
     skillAcknowledgement: process.env.AI_SAFE_DRIVER_CODEX_SKILL_HOME_ISOLATED,
     normalCodexHome: process.env.CODEX_HOME,
+    hostCwd: process.cwd(),
   });
   const env = {
     ...sanitizedHostEnvironment(process.env, ["CODEX_API_KEY"]),

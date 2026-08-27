@@ -40,6 +40,7 @@ export function runHostProcess({
   args,
   input,
   env,
+  cwd,
   timeoutMs,
   maxOutputBytes,
   platform = process.platform,
@@ -52,7 +53,8 @@ export function runHostProcess({
   }
   if (typeof input !== "string" || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1
     || !Number.isSafeInteger(maxOutputBytes) || maxOutputBytes < 1
-    || env === null || typeof env !== "object" || Array.isArray(env)) {
+    || env === null || typeof env !== "object" || Array.isArray(env)
+    || (cwd !== undefined && (typeof cwd !== "string" || cwd.length === 0))) {
     throw new Error("host adapter process bounds are invalid");
   }
 
@@ -60,6 +62,7 @@ export function runHostProcess({
     const processGroup = true;
     const child = spawn(executable, args, {
       detached: processGroup,
+      cwd,
       env,
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],
