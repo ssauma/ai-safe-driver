@@ -1076,13 +1076,14 @@ test("release documentation separates deterministic, real print-mode, and intera
   assert.doesNotMatch(document, /real host runs?:\s*PASS/iu);
 });
 
-test("contribution and PR gates keep deterministic, adjudicated, and interactive checks distinct", () => {
+test("contribution and PR gates keep deterministic, adjudicated, interactive, and local checks distinct", () => {
   for (const file of ["CONTRIBUTING.md", "CONTRIBUTING.ko.md", ".github/PULL_REQUEST_TEMPLATE.md"]) {
     const content = readFileSync(path.join(repositoryRoot, file), "utf8");
     assert.match(content, /deterministic|결정적/iu, file);
     assert.match(content, /adjudicat|판정/iu, file);
     assert.match(content, /interactive|대화형/iu, file);
-    assert.match(content, /untrusted|신뢰할 수 없는/iu, file);
     assert.match(content, /credential|자격 증명/iu, file);
+    assert.match(content, /local|로컬/iu, file);
+    assert.match(content, /manual|explicit runtime approval|명시적으로 승인/iu, file);
   }
 });

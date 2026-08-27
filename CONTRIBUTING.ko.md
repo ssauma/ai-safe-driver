@@ -31,11 +31,11 @@ claude plugin validate .
 
 릴리스 근거는 서로 다른 세 단계로 구분합니다.
 
-1. 결정적 단위 테스트는 자격 증명 없이 로컬과 신뢰할 수 있는 CI에서 실행합니다.
+1. 결정적 단위 테스트는 자격 증명 없이 로컬에서 실행합니다.
 2. 실제 print mode 동작은 `evals/cases.json`에 따라 사람이 판정합니다. fixture나 fake adapter의 action은 실제 호스트 근거가 아닙니다.
 3. 대화형 Claude Code/Codex smoke는 [릴리스 매트릭스](docs/release-smoke-test.md)를 따르며 실행 시점의 명시적 승인이 필요합니다.
 
-자격 증명이나 모델을 사용하는 테스트는 신뢰할 수 없는 pull request CI에서 절대 실행하지 않습니다. 원문 prompt, transcript, 호스트 출력, 경로가 포함된 로그는 커밋하지 않고 `.kb.tmp/` 아래에만 둡니다.
+자격 증명이나 모델을 사용하는 검증은 로컬에서 명시적으로 승인받은 뒤 실행합니다. 원문 prompt, transcript, 호스트 출력, 경로가 포함된 로그는 커밋하지 않고 `.kb.tmp/` 아래에만 둡니다.
 
 ## 풀 리퀘스트
 

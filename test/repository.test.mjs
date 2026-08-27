@@ -113,12 +113,8 @@ test("documents the supported hook runtime and fresh-session boundary in every l
   }
 });
 
-test("ships Node 20 and 22 CI jobs that run the repository tests", () => {
-  const workflowPath = ".github/workflows/test.yml";
-  assert.equal(existsSync(workflowPath), true, `missing ${workflowPath}`);
-  const workflow = read(workflowPath);
-  assert.match(workflow, /node:\s*\[20, 22\]/);
-  assert.match(workflow, /npm test/);
+test("keeps repository tests local instead of shipping CI jobs", () => {
+  assert.equal(existsSync(".github/workflows"), false, "public repository must not ship CI jobs");
 });
 
 test("aligns the package version and direct-invocation prompt", () => {

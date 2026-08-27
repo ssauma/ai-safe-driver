@@ -31,11 +31,11 @@ Behavior tests should preserve meaning and decisions rather than exact wording. 
 
 Release evidence has three distinct gates:
 
-1. Deterministic unit tests run locally and in trusted CI without credentials.
+1. Run deterministic unit tests locally without credentials.
 2. Real print-mode behavior is manually adjudicated against `evals/cases.json`; fixture or fake-adapter actions are not host evidence.
 3. Interactive Claude Code and Codex smoke runs follow [the release matrix](docs/release-smoke-test.md) and require explicit runtime approval.
 
-Credentialed/model-backed tests must never run in untrusted pull-request CI. Keep raw prompts, transcripts, host output, and path-bearing logs under `.kb.tmp/`, never in a commit.
+Keep credentialed or model-backed runs local and manually approved. Store raw prompts, transcripts, host output, and path-bearing logs under `.kb.tmp/`, never in a commit.
 
 ## Pull requests
 
