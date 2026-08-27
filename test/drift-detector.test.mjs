@@ -162,6 +162,29 @@ test("requires direct multilingual health-check intent", () => {
   }
 });
 
+test("requires explicit Korean and Japanese health qualifiers", () => {
+  const cases = [
+    ["이 대화 상태가 정상인지 점검해 줘.", "세션을 확인해."],
+    ["会話がドリフトしていないか確認してください。", "会話を確認してください。"],
+  ];
+  for (const [positive, negative] of cases) {
+    assert.equal(classifyUserPrompt(positive).explicitHealthCheck, true, positive);
+    assert.equal(classifyUserPrompt(negative).explicitHealthCheck, false, negative);
+  }
+});
+
+test("recognizes bounded multilingual new-session decisions", () => {
+  const cases = [
+    ["새 세션으로 시작해야 할까?", "대화 상태 저장 기능이 필요해"],
+    ["我们需要开始一个新对话吗？", "对话模块有问题，请修复"],
+    ["新しいセッションに移る方がいいですか？", "会話状態を保存する機能を実装してください"],
+  ];
+  for (const [positive, negative] of cases) {
+    assert.equal(classifyUserPrompt(positive).explicitHealthCheck, true, positive);
+    assert.equal(classifyUserPrompt(negative).explicitHealthCheck, false, negative);
+  }
+});
+
 test("recognizes bounded agent-output corrections without matching other previous nouns", () => {
   const correction = classifyUserPrompt("The previous response didn't follow the requested format.");
   assert.equal(correction.correction, true);
