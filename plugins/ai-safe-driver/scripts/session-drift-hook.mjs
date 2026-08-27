@@ -2,7 +2,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, opendir, readdir, rename, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   STATE_SCHEMA,
@@ -12,6 +11,7 @@ import {
   classifyUserPrompt,
   createInitialState,
 } from "./drift-detector.mjs";
+import { resolveStateRoot } from "./runtime-paths.mjs";
 
 const MAX_INPUT_BYTES = 256 * 1024;
 const MAX_CONTEXT_BYTES = 320;
@@ -30,7 +30,7 @@ const reclaimerEpochMs = TEST_MODE && Number.isFinite(testEpochMs) && testEpochM
 const configuredTestRoot = TEST_MODE
   ? process.env.AI_SAFE_DRIVER_STATE_DIR
   : undefined;
-const root = path.resolve(configuredTestRoot || path.join(tmpdir(), "ai-safe-driver"));
+const root = configuredTestRoot ? path.resolve(configuredTestRoot) : resolveStateRoot();
 const reclaimerGuardRoot = path.join(root, ".reclaimer-guards");
 const sessionKey = (id) => createHash("sha256").update(id).digest("hex").slice(0, 32);
 const statePath = (id) => path.join(root, `${sessionKey(id)}.json`);

@@ -46,15 +46,22 @@ const runDriftHook = (stateDir, input, extraEnv = {}) => spawnSync(
   },
 );
 
-const runWithoutTestMode = (stateDir, input) => {
+const runWithPluginData = (pluginData, temporary, input) => {
   const {
     AI_SAFE_DRIVER_TEST_MODE: _testMode,
     AI_SAFE_DRIVER_STATE_DIR: _stateDir,
+    CLAUDE_PLUGIN_DATA: _claudePluginData,
+    PLUGIN_DATA: _pluginData,
+    XDG_STATE_HOME: _xdgStateHome,
+    LOCALAPPDATA: _localAppData,
+    TMPDIR: _tmpdir,
+    TEMP: _temp,
+    TMP: _tmp,
     ...env
   } = process.env;
   return spawnSync(process.execPath, [hookScript], {
     encoding: "utf8",
-    env: { ...env, AI_SAFE_DRIVER_STATE_DIR: stateDir },
+    env: { ...env, CLAUDE_PLUGIN_DATA: pluginData, TMPDIR: temporary },
     input: JSON.stringify(input),
   });
 };
@@ -436,19 +443,19 @@ test("neutral prompts leave an existing record expiry unchanged", () => {
   assert.equal(after.lastSignalAt, original.lastSignalAt);
 });
 
-test("the state directory override is ignored without explicit test mode", () => {
-  const overrideRoot = makeStateDir("override");
-  const sessionId = `non-test-${process.pid}-${Date.now()}`;
-  const defaultFile = stateFile(path.join(tmpdir(), "ai-safe-driver"), sessionId);
-  rmSync(defaultFile, { force: true });
+test("plugin data creates private state without a shared temporary root", () => {
+  const pluginData = makeStateDir("plugin-data");
+  const temporary = makeStateDir("plugin-tmp");
+  const root = path.join(pluginData, "session-state");
+  const sessionId = `plugin-data-${process.pid}-${Date.now()}`;
 
-  const result = runWithoutTestMode(overrideRoot, {
+  const result = runWithPluginData(pluginData, temporary, {
     hook_event_name: "UserPromptSubmit", session_id: sessionId, prompt: "안 했잖아.",
   });
   assertNoOutput(result);
-  assert.equal(existsSync(stateFile(overrideRoot, sessionId)), false);
-  assert.equal(existsSync(defaultFile), true);
-  rmSync(defaultFile, { force: true });
+  assert.equal(mode(root), 0o700);
+  assert.equal(mode(stateFile(root, sessionId)), 0o600);
+  assert.equal(existsSync(path.join(temporary, "ai-safe-driver")), false);
 });
 
 test("unrecognized state keys are rejected and raw text never survives a state update", () => {
