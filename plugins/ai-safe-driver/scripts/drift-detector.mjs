@@ -21,7 +21,7 @@ const USER_CORRECTION = [
   /(?:that's not what i asked|i (?:already )?(?:said|asked)|told you not to|you were supposed to)/iu,
   /(?:i (?:already )?(?:told|answered) you|i (?:already )?answered (?:that|this)|you acknowledged.*(?:but|yet))/iu,
   /(?:links?|files?|pages?) you (?:gave|provided|linked).*(?:do(?:es)? not|don't|doesn't) exist|you (?:made|fabricated|invented) (?:them|it|that|this)(?: up)?|you (?:just )?(?:repeated|returned|output).*(?:identical|earlier|previous)/iu,
-  /(?:you|it|that|this)\s+(?:\w+\s+){0,2}(?:did(?:n't| not)|failed to|missed|ignored|violated|left out)|i\s+did(?:n't| not)\s+(?:ask|tell|authorize|request|approve)|(?:not applied|still missing|you said.*(?:fixed|did))/iu,
+  /(?:you|it|that|this)\s+(?:\w+\s+){0,2}(?:did(?:n't| not)|failed to|missed|ignored|violated|left out)|(?:the\s+)?(?:previous|last|prior)\s+(?:response|answer|output)\s+(?:(?:still|again|yet|just|also|already)\s+){0,2}(?:did(?:n't| not)|failed to|missed|ignored|violated|left out)|i\s+did(?:n't| not)\s+(?:ask|tell|authorize|request|approve)|(?:not applied|still missing|you said.*(?:fixed|did))/iu,
   /(?:这|這)(?:不|並不)是我(?:让|讓)你|我(?:都|已经|已經)(?:说|說)(?:了|过|過)|不是(?:说|說)(?:过|過|已经|已經)|(?:让|讓|叫)你(?:别|不要|不)|你又(?:说|說)(?:做完|完成)/iu,
   /(?:没|沒)(?:做|改|加|保留|处理|處理|修好)|(?:漏掉|遗漏|遺漏|忽略|擅自|删了|刪了)/iu,
   /(?:我)?(?:刚才|剛才|已经|已經).*(?:回答|答)(?:过|過|了)|你(?:给|給|发|發)的(?:链接|連結|鏈接).*(?:不存在|无效|無效)|你(?:又)?(?:编|編|瞎编|瞎編|捏造)/iu,
@@ -32,7 +32,7 @@ const USER_CORRECTION = [
   /(?:形式|フォーマット|言語|項目|順序).*(?:違|崩|戻|抜け)/iu,
 ];
 const RECURRENCE_MARKER = /(?:또|다시|계속|자꾸|여전히|몇\s*번|반복|again|still|keep|keeps|repeated|once\s+more|twice|又|还|還|一直|总是|總是|反复|反覆|重复|重複|几次|幾次|また|まだ|何度|何回|繰り返|ずっと|元に戻)/iu;
-const FAILURE_ANCHOR = /(?:안\s*(?:했|됐|맞|지켰|넣|고쳤|따랐|반영)|못\s*(?:했|했어)|실패|오류|틀렸|틀림|누락|빠뜨렸|빠트렸|빠졌|무시|어겼|같은\s*(?:실수|질문|문제)|말만|(?:자꾸|계속|왜).{0,8}물어|왔다\s*갔다|바뀌|되돌아|깨졌|(?:you|it|that|this)\s+(?:\w+\s+){0,2}did(?:n't| not)|failed|error|wrong|missed|ignored|same\s+(?:mistake|question|problem|thing)|identical\s+(?:answer|response|mistake)|still\s+(?:has|have|had)\s+not\s+changed|keeps?\s+(?:asking|changing)|back\s+and\s+forth|broke|错|錯|(?:没|沒)(?:有)?(?:做|改|加|修|弄|处理|處理)|失败|失敗|忽略|漏|同样|同樣|删|刪|擅自|不存在|(?:瞎)?(?:编|編)|同じ\s*(?:ミス|間違い|質問|問題)|できていな|直っていな|無視|見落と|戻って|変え|謝るだけ|存在しません|作り話|でっち上げ)/iu;
+const FAILURE_ANCHOR = /(?:안\s*(?:했|됐|맞|지켰|넣|고쳤|따랐|반영)|못\s*(?:했|했어)|실패|오류|틀렸|틀림|누락|빠뜨렸|빠트렸|빠졌|무시|어겼|같은\s*(?:실수|질문|문제)|말만|(?:자꾸|계속|왜).{0,8}물어|왔다\s*갔다|바뀌|되돌아|깨졌|(?:you|it|that|this)\s+(?:\w+\s+){0,2}did(?:n't| not)|(?:the\s+)?(?:previous|last|prior)\s+(?:response|answer|output)\s+(?:(?:still|again|yet|just|also|already)\s+){0,2}did(?:n't| not)|failed|error|wrong|missed|ignored|same\s+(?:mistake|question|problem|thing)|identical\s+(?:answer|response|mistake)|still\s+(?:has|have|had)\s+not\s+changed|keeps?\s+(?:asking|changing)|back\s+and\s+forth|broke|错|錯|(?:没|沒)(?:有)?(?:做|改|加|修|弄|处理|處理)|失败|失敗|忽略|漏|同样|同樣|删|刪|擅自|不存在|(?:瞎)?(?:编|編)|同じ\s*(?:ミス|間違い|質問|問題)|できていな|直っていな|無視|見落と|戻って|変え|謝るだけ|存在しません|作り話|でっち上げ)/iu;
 const STRONG_RECURRENCE = [
   /(?:한다고|하겠다고|고친다고).*(?:또|여전히|그대로|안\s*(?:했|됐))/iu,
   /(?:하고도|해놓고|했는데도).*(?:안|못|또|여전히)/iu,
@@ -56,7 +56,7 @@ const USER_PROTEST = [
 ];
 const HEALTH_CHECK = [
   /(?:드리프트|대화\s*상태|세션\s*상태|정상이냐|새\s*세션|컴팩션).*(?:점검|어때|필요|해야|인가|이야|냐|까)/iu,
-  /(?:are (?:you|we) drifting|has (?:this|the) conversation drifted|(?:assess|check) whether (?:this|the) conversation has drifted|conversation health|session health|should (?:we|i) compact|(?:should|do) (?:we|i) (?:start|need|use) (?:a )?new session)/iu,
+  /(?:are (?:you|we) drifting|has (?:this|the) conversation drifted|(?:assess|check) whether (?:this|the) conversation has drifted|(?:assess|check|review|diagnose)\s+(?:(?:the|this|our)\s+)?(?:conversation|session)(?:'s)?\s+health|(?:how is|what is|what's)\s+(?:(?:the|this|our)\s+)?(?:conversation|session)(?:'s)?\s+health|should (?:we|i) compact|(?:should|do) (?:we|i) (?:start|need|use) (?:a )?new session)/iu,
   /(?:对话|對話|上下文).*(?:跑偏|偏了|有问题|有問題)|(?:需要|要不要).*(?:新对话|新對話|新会话|新會話)|(?:对话|對話|会话|會話|上下文).*(?:漂移).*(?:吗|么|？|检查|檢查|确认|確認)/iu,
   /(?:会話|セッション).*(?:ずれて|おかしい|健全|状態)|(?:会話|セッション).*(?:ドリフト).*(?:か|？|確認|状態)|新しいセッション.*(?:必要|始め|移る|方が|べき|ですか|ますか)|コンパクションした方が/iu,
 ];

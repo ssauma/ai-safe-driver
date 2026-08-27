@@ -32,8 +32,13 @@ const reclaimerEpochMs = TEST_MODE && Number.isFinite(testEpochMs) && testEpochM
 const configuredTestRoot = TEST_MODE
   ? process.env.AI_SAFE_DRIVER_STATE_DIR
   : undefined;
-const root = configuredTestRoot ? path.resolve(configuredTestRoot) : resolveStateRoot();
-const reclaimerGuardRoot = path.join(root, ".reclaimer-guards");
+let root;
+try {
+  root = configuredTestRoot ? path.resolve(configuredTestRoot) : resolveStateRoot();
+} catch {
+  root = undefined;
+}
+const reclaimerGuardRoot = root ? path.join(root, ".reclaimer-guards") : undefined;
 const sessionKey = (id) => createHash("sha256").update(id).digest("hex").slice(0, 32);
 const statePath = (id) => path.join(root, `${sessionKey(id)}.json`);
 
@@ -539,6 +544,7 @@ const handleStop = async (input) => {
 };
 
 const main = async () => {
+  if (!root) throw new Error("state root unavailable");
   const input = await readStdin();
   if (input === null || typeof input !== "object" || Array.isArray(input)) return;
   if (input.hook_event_name === "Stop") {

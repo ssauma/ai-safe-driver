@@ -136,6 +136,37 @@ test("recognizes natural health and repeated-tool diagnosis wording", () => {
   assert.equal(classifyUserPrompt("It still didn't work.").recurrence, true);
 });
 
+test("requires diagnostic intent around conversation or session health nouns", () => {
+  for (const text of [
+    "Please check the conversation health.",
+    "Can you assess session health?",
+  ]) assert.equal(classifyUserPrompt(text).explicitHealthCheck, true, text);
+
+  for (const text of [
+    "Implement a conversation health endpoint.",
+    "Add a session health metric.",
+  ]) assert.equal(classifyUserPrompt(text).explicitHealthCheck, false, text);
+});
+
+test("recognizes bounded agent-output corrections without matching other previous nouns", () => {
+  const correction = classifyUserPrompt("The previous response didn't follow the requested format.");
+  assert.equal(correction.correction, true);
+  assert.equal(correction.recurrence, false);
+
+  const repeated = classifyUserPrompt("Again, the last answer still did not follow the requested format.");
+  assert.equal(repeated.correction, true);
+  assert.equal(repeated.recurrence, true);
+
+  for (const text of [
+    "The previous deployment didn't follow the requested schedule.",
+    "The prior output directory didn't exist again, so create it.",
+  ]) {
+    const signals = classifyUserPrompt(text);
+    assert.equal(signals.correction, false, text);
+    assert.equal(signals.recurrence, false, text);
+  }
+});
+
 test("does not treat neutral recurrence words as a repeated failure", () => {
   for (const text of [
     "계속 진행해.", "또 다른 질문이 있어.", "다시 설명해줘.",

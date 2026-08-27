@@ -66,6 +66,24 @@ const runWithPluginData = (pluginData, temporary, input) => {
   });
 };
 
+const runProductionHook = (cwd, stateEnv, input) => {
+  const {
+    AI_SAFE_DRIVER_TEST_MODE: _testMode,
+    AI_SAFE_DRIVER_STATE_DIR: _stateDir,
+    CLAUDE_PLUGIN_DATA: _claudePluginData,
+    PLUGIN_DATA: _pluginData,
+    XDG_STATE_HOME: _xdgStateHome,
+    LOCALAPPDATA: _localAppData,
+    ...env
+  } = process.env;
+  return spawnSync(process.execPath, [hookScript], {
+    cwd,
+    encoding: "utf8",
+    env: { ...env, ...stateEnv },
+    input: JSON.stringify(input),
+  });
+};
+
 const stateName = (sessionId) => `${createHash("sha256").update(sessionId).digest("hex").slice(0, 32)}.json`;
 const stateFile = (root, sessionId) => path.join(root, stateName(sessionId));
 const lockFile = (root, sessionId) => `${stateFile(root, sessionId)}.lock`;
@@ -477,6 +495,36 @@ test("plugin data creates private state without a shared temporary root", () => 
   assert.equal(mode(root), 0o700);
   assert.equal(mode(stateFile(root, sessionId)), 0o600);
   assert.equal(existsSync(path.join(temporary, "ai-safe-driver")), false);
+});
+
+test("relative production state variables never create state under the hook working directory", () => {
+  const workspace = makeStateDir("relative-env-workspace");
+  const safeHome = makeStateDir("relative-env-home");
+  const temporary = makeStateDir("relative-env-tmp");
+  const input = {
+    hook_event_name: "UserPromptSubmit",
+    session_id: `relative-env-${process.pid}-${Date.now()}`,
+    prompt: "안 했잖아.",
+  };
+
+  const invalidPluginData = runProductionHook(workspace, {
+    CLAUDE_PLUGIN_DATA: ".claude-state",
+    HOME: safeHome,
+    TMPDIR: temporary,
+  }, input);
+  assertBoundedStderr(invalidPluginData);
+  assert.equal(existsSync(path.join(workspace, ".claude-state")), false);
+
+  const relativeXdg = runProductionHook(workspace, {
+    XDG_STATE_HOME: ".state",
+    HOME: safeHome,
+    TMPDIR: temporary,
+  }, { ...input, session_id: `${input.session_id}-xdg` });
+  assertNoOutput(relativeXdg);
+  assert.equal(existsSync(path.join(workspace, ".state")), false);
+  const safeRoot = path.join(safeHome, ".local", "state", "ai-safe-driver");
+  assert.equal(mode(safeRoot), 0o700);
+  assert.equal(mode(stateFile(safeRoot, `${input.session_id}-xdg`)), 0o600);
 });
 
 test("unrecognized state keys are rejected and raw text never survives a state update", () => {
