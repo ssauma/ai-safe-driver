@@ -24,6 +24,7 @@ import { validateEventLabels } from "../evals/lib.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const pluginDir = path.join(repositoryRoot, "plugins", "ai-safe-driver");
+const pluginVersion = JSON.parse(readFileSync(path.join(repositoryRoot, "package.json"), "utf8")).version;
 
 function area() {
   return mkdtempSync(path.join(os.tmpdir(), "asd-host-adapter-"));
@@ -158,7 +159,7 @@ function enrichedClaudeSuccess(result = "enriched answer") {
 }
 
 function provisionCodexSkillProfile(profile) {
-  const pluginRoot = path.join(profile, "plugins", "cache", "ai-safe-driver", "ai-safe-driver", "0.3.0");
+  const pluginRoot = path.join(profile, "plugins", "cache", "ai-safe-driver", "ai-safe-driver", pluginVersion);
   mkdirSync(path.dirname(pluginRoot), { recursive: true });
   cpSync(pluginDir, pluginRoot, { recursive: true });
   writeFileSync(path.join(profile, "config.toml"), `[marketplaces.ai-safe-driver]
@@ -408,7 +409,7 @@ enabled = false
     "cache",
     "ai-safe-driver",
     "ai-safe-driver",
-    "0.3.0",
+    pluginVersion,
     "scripts",
     "drift-detector.mjs",
   ), "export default 'tampered';\n");

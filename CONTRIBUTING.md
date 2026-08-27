@@ -41,4 +41,4 @@ Credentialed/model-backed tests must never run in untrusted pull-request CI. Kee
 
 Keep the diff limited to one problem. Explain the observed failure, the chosen correction, verification evidence, token impact, and any permission change. Update every affected localized README when commands, supported languages, safety claims, or behavior changes.
 
-Keep version `0.3.0` aligned in both plugin manifests and both marketplace entries. Do not change only one declaration.
+Keep the version aligned in `package.json`, both plugin manifests, and both marketplace entries. Do not change only one declaration.

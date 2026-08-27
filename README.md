@@ -102,6 +102,8 @@ Installing the plugin or trusting its hook does not approve either action. You s
 
 Separate approval is required to write the handover file and to prepare either transition. The plugin never automatically runs `/compact` or `/clear`.
 
+If `.ai-safe-driver/` is not already ignored in a Git worktree, preparation may also require adding that exact line to the worktree's local Git exclude file. The skill shows the exact path and asks before writing it. It never changes a shared `.gitignore` or Git configuration.
+
 The bundled `SessionStart` hook consumes a one-time approval; without valid approval, it does nothing and makes no changes. It loads the handover only when the requested transition and file checksum match a short-lived approval record. Afterward, it removes the approval record but leaves the handover file for inspection. Claude Code and Codex may also ask you to review and trust this third-party hook before running it.
 
 ## Contributing

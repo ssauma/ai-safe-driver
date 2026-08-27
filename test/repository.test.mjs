@@ -29,6 +29,7 @@ const skillRoot = `${pluginRoot}/skills/${name}`;
 
 const read = (path) => readFileSync(path, "utf8");
 const json = (path) => JSON.parse(read(path));
+const packageVersion = json("package.json").version;
 const assertMatchesAll = (content, patterns, filePath) => {
   for (const pattern of patterns) {
     assert.match(content, pattern, `${filePath} is missing ${pattern}`);
@@ -66,13 +67,14 @@ test("keeps identity, source paths, and versions aligned", () => {
 
   for (const declaration of declarations) {
     assert.equal(declaration.name, name);
-    assert.equal(declaration.version, "0.3.0");
+    assert.equal(declaration.version, packageVersion);
   }
+  assert.match(packageVersion, /^\d+\.\d+\.\d+$/u);
   assert.equal(claudeMarket.plugins[0].source, `./${pluginRoot}`);
   assert.equal(codexMarket.plugins[0].source.path, `./${pluginRoot}`);
   assert.equal(codexPlugin.skills, "./skills/");
-  assert.match(read("CONTRIBUTING.md"), /version `0\.3\.0`/i);
-  assert.match(read("CONTRIBUTING.ko.md"), /버전 `0\.3\.0`/);
+  assert.match(read("CONTRIBUTING.md"), /version aligned in `package\.json`, both plugin manifests, and both marketplace entries/i);
+  assert.match(read("CONTRIBUTING.ko.md"), /`package\.json`, 두 플러그인 매니페스트, 두 마켓플레이스 항목의 버전/);
 });
 
 test("documents the supported hook runtime and fresh-session boundary in every locale", () => {
@@ -120,7 +122,7 @@ test("ships Node 20 and 22 CI jobs that run the repository tests", () => {
 });
 
 test("aligns the package version and direct-invocation prompt", () => {
-  assert.equal(json("package.json").version, "0.3.0");
+  assert.equal(packageVersion, "0.4.0");
   assert.equal(
     read(`${skillRoot}/agents/openai.yaml`).includes(
       "Use $ai-safe-driver to diagnose the repeated failure described in this prompt or visible conversation. If no evidence is available, ask for the goal, repeated result, latest correction, and output contract; never invent prior-session context.",
@@ -552,6 +554,22 @@ test("documents SessionStart timing and both forbidden automatic transitions in 
     assert.match(content, clear, `${filePath} does not forbid automatic /clear`);
     assert.match(content, /\(CONTRIBUTING\.md\)/, `${filePath} does not link English contributing guidance`);
     assert.match(content, /\(CONTRIBUTING\.ko\.md\)/, `${filePath} does not link Korean contributing guidance`);
+  }
+});
+
+test("discloses the permission-gated local Git exclude write in every readme", () => {
+  const contracts = [
+    ["README.md", "worktree's local Git exclude file", "never changes a shared `.gitignore` or Git configuration"],
+    ["README.ko.md", "worktree의 로컬 Git exclude 파일", "공유 `.gitignore`나 Git 설정은 바꾸지 않습니다"],
+    ["README.zh-CN.md", "worktree 的本地 Git 排除文件", "不会修改共享的 `.gitignore` 或 Git 配置"],
+    ["README.zh-TW.md", "worktree 的本機 Git 排除檔", "不會修改共用的 `.gitignore` 或 Git 設定"],
+    ["README.ja.md", "worktree 専用のローカル Git 除外ファイル", "共有の `.gitignore` や Git 設定は変更しません"],
+  ];
+
+  for (const [filePath, localWrite, sharedBoundary] of contracts) {
+    const content = read(filePath);
+    assert.equal(content.includes(localWrite), true, `${filePath} is missing the local Git exclude disclosure`);
+    assert.equal(content.includes(sharedBoundary), true, `${filePath} is missing the shared Git boundary`);
   }
 });
 

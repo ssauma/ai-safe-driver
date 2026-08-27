@@ -100,6 +100,8 @@ codex plugin add ai-safe-driver@ai-safe-driver
 
 写入文件需要单独批准，准备 `/compact` 或 `/clear` 切换也需要单独批准。插件不会自动执行 `/compact` 或 `/clear`。
 
+如果 Git worktree 尚未忽略 `.ai-safe-driver/`，准备交接时还需要把这一行加入该 worktree 的本地 Git 排除文件。技能会先显示准确路径，并在写入前征得许可。它不会修改共享的 `.gitignore` 或 Git 配置。
+
 内置的 `SessionStart` 钩子会消耗一次性批准。只有短期批准记录仍有效，而且切换类型与交接文件的 SHA-256 哈希值都一致时，它才会载入交接内容。载入后只删除批准记录，交接文件会保留供你检查。没有有效批准时，钩子不会做任何更改并静默退出。Claude Code 和 Codex 也可能要求你先检查并信任这个第三方钩子。
 
 ## 参与开发

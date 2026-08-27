@@ -3,7 +3,7 @@
   "name": "ai-safe-driver",
   "displayName": "AI Safe Driver",
   "description": "Recover from repeated mistakes, failed tool calls, format violations, and conversation drift.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "author": {
     "name": "Kai",
     "url": "https://github.com/ssauma"
