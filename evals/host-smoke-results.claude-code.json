@@ -1,0 +1,58 @@
+{
+  "host": "claude-code",
+  "host_version": "claude-code 2.1.246",
+  "os": "macOS 26.2 (25C56)",
+  "node_version": "v25.2.1",
+  "results": [
+    {
+      "id": "manifest-and-hook-trust",
+      "status": "BLOCKED",
+      "note": "Direct API key absent; approved real host gate was not started."
+    },
+    {
+      "id": "direct-visible-repeated-failure",
+      "status": "BLOCKED",
+      "note": "Direct API key absent; approved real host gate was not started."
+    },
+    {
+      "id": "correction-recurrence-wake",
+      "status": "BLOCKED",
+      "note": "Direct API key absent; approved real host gate was not started."
+    },
+    {
+      "id": "strict-json-output",
+      "status": "BLOCKED",
+      "note": "Direct API key absent; approved real host gate was not started."
+    },
+    {
+      "id": "manual-compact-reload",
+      "status": "BLOCKED",
+      "note": "Direct API key absent; approved real host gate was not started."
+    },
+    {
+      "id": "next-compact-transition",
+      "status": "BLOCKED",
+      "note": "Direct API key absent; approved real host gate was not started."
+    },
+    {
+      "id": "clear-transition",
+      "status": "BLOCKED",
+      "note": "Direct API key absent; approved real host gate was not started."
+    },
+    {
+      "id": "approval-rejection",
+      "status": "BLOCKED",
+      "note": "Direct API key absent; approved real host gate was not started."
+    },
+    {
+      "id": "no-node-limitation",
+      "status": "BLOCKED",
+      "note": "Direct API key absent; approved real host gate was not started."
+    },
+    {
+      "id": "bounded-payload",
+      "status": "BLOCKED",
+      "note": "Direct API key absent; approved real host gate was not started."
+    }
+  ]
+}

@@ -1,6 +1,8 @@
 # Cross-host release smoke test
 
-Real host runs: **NOT RUN (awaiting runtime user approval)**.
+Real host runs: **BLOCKED before host invocation on 2026-08-27**. Both runtime gates were approved, but neither supported direct API key was present. No Claude Code or Codex CLI, model, plugin, or interactive command was started; no normal profile was inspected or used. The installed host versions below were derived from executable metadata without launching either host.
+
+Bounded records: [Claude Code](../evals/host-smoke-results.claude-code.json) and [Codex](../evals/host-smoke-results.codex.json). All ten rows are BLOCKED, not FAIL or PASS. No disposable runtime root was created, so there is no retained profile or workspace to clean up from this attempt.
 
 This gate records all 10 cases on each host: Claude Code and Codex. Deterministic adapter tests, automated print-mode behavior runs, and mandatory interactive multi-turn hook smoke are separate evidence layers. A passing unit test or print-mode response never substitutes for an interactive hook transition.
 
@@ -164,3 +166,5 @@ In the Codex interactive session, execute the same ten-case matrix. For manual c
 ## Release record
 
 Create one schema-valid result object per host only after manual review. Until credentialed and interactive runs are explicitly approved and completed, every applicable case remains **NOT RUN** in working notes and must be recorded as BLOCKED rather than PASS in any release result.
+
+For the 2026-08-27 attempt, both runtime approvals were present but supported direct authentication was unavailable. The boolean-only preflight stopped execution before either host began, so no automated response exists to adjudicate and no interactive observation exists to score. The two linked bounded records are the complete release evidence for this attempt.

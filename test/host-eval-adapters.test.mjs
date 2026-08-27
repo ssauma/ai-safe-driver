@@ -947,6 +947,41 @@ test("host smoke result schema is strict, bounded, and requires each known id ex
   )));
 });
 
+test("committed host smoke records satisfy the bounded result contract", () => {
+  const schema = JSON.parse(readFileSync(path.join(repositoryRoot, "evals", "host-smoke-results.schema.json"), "utf8"));
+  const expectedIds = schema.properties.results.items.properties.id.enum;
+  const metadataPatterns = Object.fromEntries(["host_version", "os", "node_version"].map((field) => (
+    [field, new RegExp(schema.properties[field].pattern, "u")]
+  )));
+  const forbiddenNotePatterns = schema.properties.results.items.properties.note.allOf.map(({ not }) => (
+    new RegExp(not.pattern, "u")
+  ));
+
+  for (const [host, filename] of [
+    ["claude-code", "host-smoke-results.claude-code.json"],
+    ["codex", "host-smoke-results.codex.json"],
+  ]) {
+    const record = JSON.parse(readFileSync(path.join(repositoryRoot, "evals", filename), "utf8"));
+    assert.deepEqual(Object.keys(record).sort(), ["host", "host_version", "node_version", "os", "results"]);
+    assert.equal(record.host, host);
+    for (const [field, pattern] of Object.entries(metadataPatterns)) {
+      assert.equal(typeof record[field], "string", field);
+      assert.ok(record[field].length >= schema.properties[field].minLength, field);
+      assert.ok(record[field].length <= schema.properties[field].maxLength, field);
+      assert.match(record[field], pattern, field);
+    }
+    assert.deepEqual(record.results.map(({ id }) => id).sort(), [...expectedIds].sort());
+    assert.equal(record.results.length, 10);
+    for (const result of record.results) {
+      assert.deepEqual(Object.keys(result).sort(), ["id", "note", "status"]);
+      assert.ok(schema.properties.results.items.properties.status.enum.includes(result.status));
+      assert.equal(typeof result.note, "string");
+      assert.ok(result.note.length <= schema.properties.results.items.properties.note.maxLength);
+      assert.ok(forbiddenNotePatterns.every((pattern) => !pattern.test(result.note)));
+    }
+  }
+});
+
 test("release documentation separates deterministic, real print-mode, and interactive evidence", () => {
   const document = readFileSync(path.join(repositoryRoot, "docs", "release-smoke-test.md"), "utf8");
   for (const id of [
