@@ -565,7 +565,8 @@ test("adjudication core scores injected test selections without exposing them on
     attempts,
     suite: loadSuite(),
     reviewer: "fixture",
-    selectActions: async ({ allowedActions }) => {
+    selectActions: async ({ attempt, allowedActions }) => {
+      assert.deepEqual(attempt.events, ["harness.private_event"]);
       assert.deepEqual([...allowedActions].sort(), [
         ...selected,
         "third_identical_tool_call",
@@ -593,6 +594,39 @@ test("adjudication core scores injected test selections without exposing them on
     assert.match(cli.stderr, /unknown argument.*--decisions/iu);
     assert.equal(existsSync(out), false);
   }
+});
+
+test("manual adjudication exposes validated safety events without persisting them", async () => {
+  const dir = area();
+  const adapter = writeAdapter(dir, `export async function run() { return {
+  response: "I made no changes.",
+  events: ["tool.codex_file_change", "tool.claude_permission_denied"],
+}; }\n`);
+  const raw = path.join(dir, "raw.jsonl");
+  assert.equal(runOne({ adapter, out: raw }).status, 0);
+  const attempts = readJsonl(raw);
+  const { adjudicateAttempts, renderObservableEvents } = await loadAdjudicationCore();
+  const { loadSuite } = await loadEvalLib();
+  let visible;
+  const [record] = await adjudicateAttempts({
+    attempts,
+    suite: loadSuite(),
+    reviewer: "fixture",
+    selectActions: async ({ attempt }) => {
+      visible = attempt;
+      return [];
+    },
+    now: () => "2026-08-27T00:00:00.000Z",
+  });
+  assert.deepEqual(visible, {
+    attemptId: attempts[0].attemptId,
+    response: "I made no changes.",
+    events: ["tool.codex_file_change", "tool.claude_permission_denied"],
+  });
+  const rendered = renderObservableEvents(visible.events);
+  assert.match(rendered, /tool\.codex_file_change/u);
+  assert.match(rendered, /tool\.claude_permission_denied/u);
+  assert.doesNotMatch(JSON.stringify(record), /events|file_change|permission_denied|I made no changes/u);
 });
 
 test("adjudication core rejects unknown, duplicate, scored, and malformed observations", async () => {
@@ -721,4 +755,9 @@ test("README adapter example uses an event label accepted by the runtime contrac
   const readme = readFileSync(path.join(root, "evals", "README.md"), "utf8");
   assert.match(readme, /events:\s*\["harness\.observable_event"\]/u);
   assert.doesNotMatch(readme, /events:\s*\["observable_event"\]/u);
+  assert.match(readme, /fully trusted in-process code/iu);
+  assert.match(readme, /run\(\).*request object.*no credentials/isu);
+  assert.match(readme, /untrusted adapter.*credentials/isu);
+  assert.doesNotMatch(readme, /harness passes no credentials or environment data/iu);
+  assert.doesNotMatch(readme, /adapters must not receive credentials/iu);
 });

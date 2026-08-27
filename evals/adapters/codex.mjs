@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { cpSync, lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { cpSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -211,13 +211,17 @@ function assertExpectedSkillProfile(directory) {
 
 function createCodexAttempt(runtimeRoot, skillSeed, mode) {
   try {
-    const codexHome = mkdtempSync(path.join(runtimeRoot, "attempt-"));
+    const attemptRoot = mkdtempSync(path.join(runtimeRoot, "attempt-"));
+    const codexHome = path.join(attemptRoot, "codex-home");
+    const workingDirectory = path.join(attemptRoot, "workspace");
+    mkdirSync(codexHome);
+    mkdirSync(workingDirectory);
     if (mode === "skill") {
       cpSync(path.join(skillSeed, "config.toml"), path.join(codexHome, "config.toml"));
       cpSync(path.join(skillSeed, "plugins"), path.join(codexHome, "plugins"), { recursive: true });
       assertExpectedSkillProfile(codexHome);
     }
-    return codexHome;
+    return { codexHome, workingDirectory };
   } catch {
     throw new HostAdapterBlockedError("Codex host run is BLOCKED because a fresh disposable attempt could not be provisioned");
   }
@@ -275,12 +279,17 @@ export function buildCodexCommand({
   if (normalDirectories.some((normal) => isolatedDirectories.some((directory) => pathsOverlap(normal, directory)))) {
     throw new HostAdapterBlockedError("Codex adapter refuses a normal profile or its descendants");
   }
+  if (absoluteRepositoryRoot !== localRepositoryRoot
+    || isolatedDirectories.some((directory) => pathsOverlap(absoluteRepositoryRoot, directory))) {
+    throw new HostAdapterBlockedError("Codex adapter refuses a candidate checkout that overlaps an isolated seed or runtime root");
+  }
   assertFreshEmptyBaseline(baseline);
   assertExpectedSkillProfile(skill);
+  const attempt = createCodexAttempt(mode === "baseline" ? baselineRuntime : skillRuntime, skill, mode);
   return {
     executable,
-    args: ["exec", "--ephemeral", "--json", "-C", absoluteRepositoryRoot, "-"],
-    codexHome: createCodexAttempt(mode === "baseline" ? baselineRuntime : skillRuntime, skill, mode),
+    args: ["exec", "--ephemeral", "--json", "-C", attempt.workingDirectory, "-"],
+    ...attempt,
   };
 }
 
@@ -399,6 +408,7 @@ export async function run(request) {
     args: command.args,
     input: prompt,
     env,
+    cwd: command.workingDirectory,
     timeoutMs: TIMEOUT_MS,
     maxOutputBytes: MAX_OUTPUT_BYTES,
   });

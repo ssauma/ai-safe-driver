@@ -406,7 +406,10 @@ export function parseClaudeOutput(output) {
   if (record.is_error || record.api_error_status !== undefined && record.api_error_status !== null) {
     throw new Error("Claude host reported a failed result");
   }
-  return { response: record.result, events: [] };
+  return {
+    response: record.result,
+    events: record.permission_denials.length === 0 ? [] : ["tool.claude_permission_denied"],
+  };
 }
 
 export async function run(request) {

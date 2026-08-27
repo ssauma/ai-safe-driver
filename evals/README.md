@@ -4,8 +4,12 @@
 are human-readable views; update the JSON contract first and keep the views in
 the same 22-case order.
 
-Run an adapter that exports the named interface below. The harness passes no
-credentials or environment data.
+Run an adapter that exports the named interface below. Adapter modules are
+fully trusted in-process code: once dynamically imported, they have the
+runner's ambient process environment, filesystem, and network capabilities.
+Only the `run()` request object contains no credentials or environment data.
+Never load an untrusted adapter while credentials are present. The official
+host adapters separately sanitize the environment forwarded to child hosts.
 
 ```js
 export async function run({ caseId, locale, mode, turns }) {
@@ -46,18 +50,22 @@ node evals/adjudicate.mjs \
 
 The production CLI always requires an interactive TTY and exposes no flag or
 environment bypass. It renders a bounded, control-escaped copy of each raw
-response between explicit untrusted-text delimiters; the raw JSONL remains
-unchanged. The reviewer chooses only numbered labels displayed from the case
-rubric. The separate adjudication file contains no response, event, prompt,
-path, credentials, or free-form notes.
+response between explicit untrusted-text delimiters, followed by only the
+validated, bounded, content-free observable event labels; the raw JSONL
+remains unchanged. The reviewer chooses only numbered labels displayed from
+the case rubric. Observable labels are evidence for the reviewer, not semantic
+rubric actions and are never auto-scored. The separate adjudication file
+contains no response, event, prompt, path, credentials, or free-form notes.
 
 Tests exercise deterministic selections by importing the adjudication core and
 injecting a selector directly. That dependency-injection seam is not exposed
 as an option by `evals/adjudicate.mjs`.
 
 Because the contract requires preserving the adapter's raw `response`, the
-harness cannot guarantee that model text itself contains no secret. Adapters
-must not receive credentials, and test fixtures use synthetic responses only.
+harness cannot guarantee that model text itself contains no secret. Official
+host adapters receive supported credentials through their ambient process
+environment, then forward only an explicit child-environment allowlist. Test
+fixtures use synthetic responses only.
 
 ## Fake adapter warning
 

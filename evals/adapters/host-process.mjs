@@ -117,10 +117,12 @@ export function runHostProcess({
         reject(new Error("host adapter output exceeded the configured limit"));
       } else if (code !== 0) {
         reject(new Error("host adapter exited with a nonzero status"));
+      } else if (stderrBytes !== 0) {
+        reject(new Error("host adapter reported unexpected stderr"));
       } else {
         resolve({
           stdout: Buffer.concat(stdout).toString("utf8"),
-          stderr: Buffer.concat(stderr).toString("utf8"),
+          stderr: "",
         });
       }
     });

@@ -89,7 +89,11 @@ export async function adjudicateAttempts({ attempts, suite, selectActions, revie
   const records = [];
   for (const { attempt, item } of contexts) {
     const allowedActions = Object.freeze(labelsFor(item));
-    const visibleAttempt = Object.freeze({ attemptId: attempt.attemptId, response: attempt.response });
+    const visibleAttempt = Object.freeze({
+      attemptId: attempt.attemptId,
+      response: attempt.response,
+      events: Object.freeze([...attempt.events]),
+    });
     const selection = await selectActions({ attempt: visibleAttempt, allowedActions });
     if (!Array.isArray(selection) || !selection.every((value) => typeof value === "string")) {
       throw new Error(`selected actions must be an array of strings: ${attempt.attemptId}`);
@@ -107,6 +111,15 @@ export async function adjudicateAttempts({ attempts, suite, selectActions, revie
     });
   }
   return records;
+}
+
+export function renderObservableEvents(events) {
+  validateEventLabels(events, "visible observable events");
+  return [
+    "----- BEGIN VALIDATED OBSERVABLE EVENT LABELS -----",
+    ...(events.length === 0 ? ["| (none)"] : events.map((event) => `| ${event}`)),
+    "----- END VALIDATED OBSERVABLE EVENT LABELS -----",
+  ].join("\n");
 }
 
 function displayCharacter(character) {

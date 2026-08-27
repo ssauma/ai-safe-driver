@@ -6,7 +6,7 @@ Bounded records: [Claude Code](../evals/host-smoke-results.claude-code.json) and
 
 This gate records all 10 cases on each host: Claude Code and Codex. Deterministic adapter tests, automated print-mode behavior runs, and mandatory interactive multi-turn hook smoke are separate evidence layers. A passing unit test or print-mode response never substitutes for an interactive hook transition.
 
-The Codex command contracts used here are documented in the official [CLI reference](https://developers.openai.com/codex/cli/reference), [non-interactive mode guide](https://learn.chatgpt.com/docs/non-interactive-mode), [plugin guide](https://developers.openai.com/codex/plugins), and [hooks guide](https://developers.openai.com/codex/hooks). In particular, `codex exec --ephemeral --json -C <absolute-repository-root> -` emits JSONL and accepts the prompt on stdin. Codex hooks document `PLUGIN_DATA`, with `CLAUDE_PLUGIN_DATA` retained for compatibility, and require users to trust hook commands. Event source values not specified by those contracts are observations to record, not assumptions.
+The Codex command contracts used here are documented in the official [CLI reference](https://developers.openai.com/codex/cli/reference), [non-interactive mode guide](https://learn.chatgpt.com/docs/non-interactive-mode), [plugin guide](https://developers.openai.com/codex/plugins), and [hooks guide](https://developers.openai.com/codex/hooks). In particular, `codex exec --ephemeral --json -C <absolute-disposable-attempt-workspace> -` emits JSONL and accepts the prompt on stdin. Codex hooks document `PLUGIN_DATA`, with `CLAUDE_PLUGIN_DATA` retained for compatibility, and require users to trust hook commands. Event source values not specified by those contracts are observations to record, not assumptions.
 
 Claude print-mode follows the official [CLI reference](https://code.claude.com/docs/en/cli-reference), [headless-mode skill invocation](https://code.claude.com/docs/en/headless), and [Agent SDK result types](https://code.claude.com/docs/en/agent-sdk/typescript). Every attempt receives a newly created `HOME`, `CLAUDE_CONFIG_DIR`, plugin-data directory, and empty working directory. Baseline passes no plugin and sends the ordinary case prompt. Skill mode adds only the canonical physical `--plugin-dir` and sends the exact namespaced invocation `/ai-safe-driver:ai-safe-driver <case-prompt>` on stdin. Registration alone is not skill evidence.
 
@@ -32,9 +32,9 @@ Bounded process-tree termination is supported on POSIX. Windows host-adapter exe
 
 None of the commands in the host sections may be invoked merely because this document exists. Immediately before the first credentialed/model-backed CLI call for each host, ask the corresponding sentence exactly:
 
-> May I now run the documented credentialed Claude Code host smoke commands, which may consume model quota and will write raw output only under `.kb.tmp/ASD-HOST-EVAL/`?
+> May I now run the documented credentialed Claude Code host smoke commands, which may consume model quota, store raw output only under `.kb.tmp/ASD-HOST-EVAL/`, and allow the host to mutate only fresh disposable attempt workspaces under the acknowledged runtime roots?
 
-> May I now run the documented credentialed Codex host smoke commands, which may consume model quota and will write raw output only under `.kb.tmp/ASD-HOST-EVAL/`?
+> May I now run the documented credentialed Codex host smoke commands, which may consume model quota, store raw output only under `.kb.tmp/ASD-HOST-EVAL/`, and allow the host to mutate only fresh disposable attempt workspaces under the acknowledged runtime roots?
 
 Only an explicit affirmative reply given at runtime authorizes those calls. Approval for one host does not authorize the other. Plugin validation that is demonstrably local may run separately, but must not be used to infer approval for model calls, interactive sessions, installation, authentication, or cleanup.
 
@@ -95,13 +95,13 @@ claude -p --no-session-persistence --output-format json --plugin-dir <physical-l
 /ai-safe-driver:ai-safe-driver <case-prompt>
 ```
 
-Codex uses ephemeral JSONL, a physical repository root, and stdin (`-`). `AI_SAFE_DRIVER_CODEX_BASELINE_HOME` is an empty immutable seed. `AI_SAFE_DRIVER_CODEX_SKILL_HOME` is an immutable, validated local-plugin seed. On every baseline or skill call, the adapter creates a fresh attempt under the matching runtime root and sets only that attempt as the child's `CODEX_HOME` and `HOME`. It never runs a host against either seed.
+Codex uses ephemeral JSONL, stdin (`-`), and a fresh physical disposable workspace under the selected runtime root for every attempt. The canonical repository is read only by trusted adapter code for plugin source and seed-integrity checks; it is never passed to the subject as `-C`. `AI_SAFE_DRIVER_CODEX_BASELINE_HOME` is an empty immutable seed. `AI_SAFE_DRIVER_CODEX_SKILL_HOME` is an immutable, validated local-plugin seed. On every baseline or skill call, the adapter creates sibling `codex-home` and empty `workspace` directories inside a fresh attempt root, sets only the former as the child's `CODEX_HOME` and `HOME`, and passes only the latter to `-C`. It never runs a host against either seed or the live candidate checkout.
 
 The two Claude runtime roots may contain retained earlier attempts; the adapter never reuses them and always creates a fresh empty attempt. The Codex baseline seed must remain empty. The Codex skill seed accepts only the exact marketplace and enabled-plugin keys, one matching plugin version, and a nonsymlinked cached plugin tree that byte-matches this checkout's canonical `plugins/ai-safe-driver` tree. The adapter copies only that validated seed state into a new attempt and revalidates the copy before launch. A repeat run therefore gets fresh runtime state without weakening seed integrity. Any extra marketplace/plugin/key/version, disabled or altered plugin, symlinked payload, overlapping seed/root, normal-profile alias, or unexpected seed state is BLOCKED. Reprovision the affected disposable seed or root; never clean or repurpose a normal profile.
 
 The adapters preserve raw responses only in `.kb.tmp/ASD-HOST-EVAL/`. Run `evals/adjudicate.mjs` only after a human maps each response to allowed labels from `evals/cases.json`; fake-adapter actions are harness evidence and are never real host behavior evidence.
 
-Use a disposable checkout containing this exact release candidate for real behavior runs, because host tool policies may allow workspace changes. Never point the adapters at an unrelated live workspace. The fixed high-risk selection is run in English and Korean, twice per mode on Claude (64 subject runs):
+Host tool policies may allow workspace changes. The adapters therefore confine subject mutation risk to their fresh empty disposable attempt workspaces and never use the live candidate checkout as a host working directory. Retain those workspaces as evidence until separately approved cleanup. The fixed high-risk selection is run in English and Korean, twice per mode on Claude (64 subject runs):
 
 ```bash
 node evals/run-evals.mjs --adapter ./evals/adapters/claude-code.mjs --mode baseline --repetitions 2 --locale en --locale ko --case repeated-tool-authentication --case strict-output-contract --case high-risk-without-permission --case approved-compact-handover --case file-approval-is-not-clear-approval --case invalid-or-stale-approval --case authorization-boundary-after-correction --case neutral-recurrence-and-anger --out .kb.tmp/ASD-HOST-EVAL/claude-baseline-raw.jsonl
@@ -142,10 +142,16 @@ ASD_REPO_ROOT="$(pwd -P)"
 printf 'Baseline seed retained at: %s\nSkill seed retained at: %s\n' "$ASD_CODEX_BASELINE_SEED" "$ASD_CODEX_SKILL_SEED"
 HOME="$ASD_CODEX_SKILL_SEED" CODEX_HOME="$ASD_CODEX_SKILL_SEED" codex plugin marketplace add "$ASD_REPO_ROOT"
 HOME="$ASD_CODEX_SKILL_SEED" CODEX_HOME="$ASD_CODEX_SKILL_SEED" codex plugin add ai-safe-driver@ai-safe-driver
-ASD_CODEX_INTERACTIVE_HOME="$(mktemp -d "$ASD_CODEX_SKILL_RUNTIME_ROOT/interactive-XXXXXX")"
-cp "$ASD_CODEX_SKILL_SEED/config.toml" "$ASD_CODEX_INTERACTIVE_HOME/config.toml"
-cp -R "$ASD_CODEX_SKILL_SEED/plugins" "$ASD_CODEX_INTERACTIVE_HOME/plugins"
-HOME="$ASD_CODEX_INTERACTIVE_HOME" CODEX_HOME="$ASD_CODEX_INTERACTIVE_HOME" codex
+ASD_CODEX_INTERACTIVE_ATTEMPT="$(mktemp -d "$ASD_CODEX_SKILL_RUNTIME_ROOT/interactive-XXXXXX")"
+mkdir "$ASD_CODEX_INTERACTIVE_ATTEMPT/codex-home" "$ASD_CODEX_INTERACTIVE_ATTEMPT/workspace"
+cp "$ASD_CODEX_SKILL_SEED/config.toml" "$ASD_CODEX_INTERACTIVE_ATTEMPT/codex-home/config.toml"
+cp -R "$ASD_CODEX_SKILL_SEED/plugins" "$ASD_CODEX_INTERACTIVE_ATTEMPT/codex-home/plugins"
+(
+  cd "$ASD_CODEX_INTERACTIVE_ATTEMPT/workspace"
+  HOME="$ASD_CODEX_INTERACTIVE_ATTEMPT/codex-home" \
+  CODEX_HOME="$ASD_CODEX_INTERACTIVE_ATTEMPT/codex-home" \
+  codex
+)
 ```
 
 The marketplace and plugin commands above are stable plugin commands, but installing or launching still requires Codex-specific runtime approval. Before cloning, validate that the seed has the exact bounded shape described above; after cloning, validate the fresh attempt again. Use only `CODEX_API_KEY` as the supported non-persistent authentication source; otherwise mark credentialed cases BLOCKED. Do not inspect, display, or copy authentication state.

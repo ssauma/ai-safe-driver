@@ -258,8 +258,14 @@ test("Codex clones immutable seeds into fresh per-attempt homes", () => {
     baselineAcknowledgement: "1",
     skillAcknowledgement: "1",
   });
-  assert.deepEqual(baseline.args, ["exec", "--ephemeral", "--json", "-C", repositoryRoot, "-"]);
-  assert.deepEqual(skill.args, baseline.args);
+  assert.deepEqual(baseline.args, ["exec", "--ephemeral", "--json", "-C", baseline.workingDirectory, "-"]);
+  assert.deepEqual(skill.args, ["exec", "--ephemeral", "--json", "-C", skill.workingDirectory, "-"]);
+  assert.notEqual(baseline.workingDirectory, repositoryRoot);
+  assert.notEqual(skill.workingDirectory, repositoryRoot);
+  assert.ok(baseline.workingDirectory.startsWith(`${realpathSync(baselineRuntimeRoot)}${path.sep}`));
+  assert.ok(skill.workingDirectory.startsWith(`${realpathSync(skillRuntimeRoot)}${path.sep}`));
+  assert.equal(readdirSync(baseline.workingDirectory).length, 0);
+  assert.equal(readdirSync(skill.workingDirectory).length, 0);
   assert.ok(baseline.codexHome.startsWith(`${realpathSync(baselineRuntimeRoot)}${path.sep}`));
   assert.ok(skill.codexHome.startsWith(`${realpathSync(skillRuntimeRoot)}${path.sep}`));
   assert.equal(readdirSync(baseline.codexHome).length, 0);
@@ -276,6 +282,7 @@ test("Codex clones immutable seeds into fresh per-attempt homes", () => {
     skillAcknowledgement: "1",
   });
   assert.notEqual(baseline.codexHome, baselineAgain.codexHome);
+  assert.notEqual(baseline.workingDirectory, baselineAgain.workingDirectory);
   assert.throws(() => buildCodexCommand({
     executable,
     mode: "skill",
@@ -317,6 +324,17 @@ test("Codex clones immutable seeds into fresh per-attempt homes", () => {
     skillAcknowledgement: "1",
     normalCodexHome: baselineHome,
   }), /normal/iu);
+  assert.throws(() => buildCodexCommand({
+    executable,
+    mode: "baseline",
+    repositoryRoot,
+    baselineCodexHome: baselineHome,
+    skillCodexHome: skillHome,
+    baselineRuntimeRoot: repositoryRoot,
+    skillRuntimeRoot,
+    baselineAcknowledgement: "1",
+    skillAcknowledgement: "1",
+  }), /candidate|repository|checkout|overlap/iu);
 
   const aliasedParent = area();
   const physicalParent = area();
@@ -435,6 +453,16 @@ test("documented Claude JSON and Codex JSONL response shapes parse to safe obser
   assert.deepEqual(parseClaudeOutput(JSON.stringify(claudeSuccess("empty model usage", { modelUsage: {} }))), {
     response: "empty model usage",
     events: [],
+  });
+  assert.deepEqual(parseClaudeOutput(JSON.stringify(claudeSuccess("No action taken.", {
+    permission_denials: [{
+      tool_name: "Write",
+      tool_use_id: "tool-use-1",
+      tool_input: { file_path: "/private/live-checkout/secret.txt", content: "SYNTHETIC_SECRET" },
+    }],
+  }))), {
+    response: "No action taken.",
+    events: ["tool.claude_permission_denied"],
   });
 
   const primary = parseCodexOutput([
@@ -724,6 +752,20 @@ test("bounded process execution rejects timeout, oversized output, and nonzero e
     return true;
   });
 
+  const warning = fixture("warning", "process.stdout.write('ok'); process.stderr.write('SYNTHETIC_SECRET_VALUE /private/workspace');");
+  await assert.rejects(() => runHostProcess({
+    executable: warning,
+    args: [],
+    input: "SYNTHETIC_PRIVATE_PROMPT",
+    env: {},
+    timeoutMs: 1_000,
+    maxOutputBytes: 1024,
+  }), (error) => {
+    assert.equal(error.message, "host adapter reported unexpected stderr");
+    assert.doesNotMatch(error.message, /SYNTHETIC|private|workspace/iu);
+    return true;
+  });
+
   const descendant = fixture("descendant", `
 const { spawn } = require("node:child_process");
 spawn(process.execPath, ["-e", "setTimeout(() => {}, 2000)"], { stdio: ["ignore", "inherit", "inherit"] });
@@ -816,6 +858,7 @@ process.stdin.on("end", () => {
   fs.appendFileSync(${JSON.stringify(codexCapture)}, JSON.stringify({
     input, codexHome: process.env.CODEX_HOME, home: process.env.HOME,
     seeded: fs.existsSync(process.env.CODEX_HOME + "/config.toml"),
+    args: process.argv.slice(2), cwd: process.cwd(),
   }) + "\\n");
   process.stdout.write(JSON.stringify({ type: "thread.started", thread_id: "opaque" }) + "\\n");
   process.stdout.write(JSON.stringify({ type: "turn.started" }) + "\\n");
@@ -853,6 +896,12 @@ process.stdin.on("end", () => {
   const codexAttempts = readFileSync(codexCapture, "utf8").trim().split("\n").map(JSON.parse);
   assert.equal(new Set(codexAttempts.map(({ codexHome }) => codexHome)).size, 4);
   assert.equal(new Set(codexAttempts.map(({ home }) => home)).size, 4);
+  assert.equal(new Set(codexAttempts.map(({ cwd }) => cwd)).size, 4);
+  assert.ok(codexAttempts.slice(0, 2).every(({ cwd }) => cwd.startsWith(`${realpathSync(codexBaselineRoot)}${path.sep}`)));
+  assert.ok(codexAttempts.slice(2).every(({ cwd }) => cwd.startsWith(`${realpathSync(codexSkillRoot)}${path.sep}`)));
+  assert.ok(codexAttempts.every(({ cwd, args }) => (
+    cwd !== repositoryRoot && args[args.indexOf("-C") + 1] === cwd
+  )));
   assert.deepEqual(codexAttempts.map(({ seeded }) => seeded), [false, false, true, true]);
   assert.equal(readdirSync(baselineSeed).length, 0);
   assert.equal(readFileSync(path.join(skillSeed, "config.toml"), "utf8"), skillSeedConfig);
@@ -1019,6 +1068,9 @@ test("release documentation separates deterministic, real print-mode, and intera
   assert.match(document, /PreCompact\.trigger/u);
   assert.match(document, /SessionStart\.source/u);
   assert.match(document, /observation.*record/isu);
+  assert.match(document, /fresh.*disposable.*workspace|disposable.*workspace.*fresh/isu);
+  assert.match(document, /mutation.*disposable.*workspace|disposable.*workspace.*mutation/isu);
+  assert.doesNotMatch(document, /codex exec --ephemeral --json -C <absolute-repository-root>/iu);
   assert.match(document, /NOT RUN/iu);
   assert.doesNotMatch(document, /real host runs?:\s*PASS/iu);
 });

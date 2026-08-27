@@ -3,6 +3,7 @@ import { createInterface } from "node:readline/promises";
 
 import {
   adjudicateAttempts,
+  renderObservableEvents,
   renderUntrustedResponse,
   validateAttempts,
 } from "./adjudication-core.mjs";
@@ -48,7 +49,7 @@ async function main() {
       suite,
       reviewer: "manual",
       selectActions: async ({ attempt, allowedActions }) => {
-        process.stdout.write(`\nAttempt ${attempt.attemptId}\n${renderUntrustedResponse(attempt.response)}\nAllowed action labels:\n`);
+        process.stdout.write(`\nAttempt ${attempt.attemptId}\n${renderUntrustedResponse(attempt.response)}\n${renderObservableEvents(attempt.events)}\nAllowed action labels:\n`);
         allowedActions.forEach((label, index) => process.stdout.write(`  ${index + 1}. ${label}\n`));
         const answer = await terminal.question("Select comma-separated numbers (blank for none): ");
         return answer.trim() === "" ? [] : answer.split(",").map((part) => {
