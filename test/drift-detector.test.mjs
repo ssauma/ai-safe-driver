@@ -145,6 +145,8 @@ test("requires diagnostic intent around conversation or session health nouns", (
   for (const text of [
     "Implement a conversation health endpoint.",
     "Add a session health metric.",
+    "Review the conversation health endpoint.",
+    "Create a command to check session health.",
   ]) assert.equal(classifyUserPrompt(text).explicitHealthCheck, false, text);
 });
 

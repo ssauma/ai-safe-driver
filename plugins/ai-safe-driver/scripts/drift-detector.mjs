@@ -56,7 +56,8 @@ const USER_PROTEST = [
 ];
 const HEALTH_CHECK = [
   /(?:드리프트|대화\s*상태|세션\s*상태|정상이냐|새\s*세션|컴팩션).*(?:점검|어때|필요|해야|인가|이야|냐|까)/iu,
-  /(?:are (?:you|we) drifting|has (?:this|the) conversation drifted|(?:assess|check) whether (?:this|the) conversation has drifted|(?:assess|check|review|diagnose)\s+(?:(?:the|this|our)\s+)?(?:conversation|session)(?:'s)?\s+health|(?:how is|what is|what's)\s+(?:(?:the|this|our)\s+)?(?:conversation|session)(?:'s)?\s+health|should (?:we|i) compact|(?:should|do) (?:we|i) (?:start|need|use) (?:a )?new session)/iu,
+  /(?:are (?:you|we) drifting|has (?:this|the) conversation drifted|(?:assess|check) whether (?:this|the) conversation has drifted|should (?:we|i) compact|(?:should|do) (?:we|i) (?:start|need|use) (?:a )?new session)/iu,
+  /^(?:(?:please|kindly)\s+)?(?:(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?)?(?:assess|check|review|diagnose)\s+(?:(?:the|this|our)\s+)?(?:conversation|session)(?:'s)?\s+health|(?:how is|what is|what's)\s+(?:(?:the|this|our)\s+)?(?:conversation|session)(?:'s)?\s+health)\s*[?!.]*$/iu,
   /(?:对话|對話|上下文).*(?:跑偏|偏了|有问题|有問題)|(?:需要|要不要).*(?:新对话|新對話|新会话|新會話)|(?:对话|對話|会话|會話|上下文).*(?:漂移).*(?:吗|么|？|检查|檢查|确认|確認)/iu,
   /(?:会話|セッション).*(?:ずれて|おかしい|健全|状態)|(?:会話|セッション).*(?:ドリフト).*(?:か|？|確認|状態)|新しいセッション.*(?:必要|始め|移る|方が|べき|ですか|ますか)|コンパクションした方が/iu,
 ];
