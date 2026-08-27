@@ -6,10 +6,10 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
-  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -843,26 +843,19 @@ const writeApprovalSync = (armedPath, approval) => {
 };
 
 // Some filesystems immediately reuse an unlinked inode number for the next
-// file created at the same path, so decoy files occupy freed inodes until the
-// recreated file provably lands on a different inode.
+// file created at the same path, so the original file is renamed aside to keep
+// its inode occupied while the replacement is created.
 const recreateOnDifferentInode = (filePath, contents) => {
   const originalIno = statSync(filePath).ino;
-  unlinkSync(filePath);
-  const decoys = [];
+  const inodeHolder = `${filePath}.original-inode-holder`;
+  renameSync(filePath, inodeHolder);
   try {
-    for (let attempt = 0; attempt < 32; attempt += 1) {
-      const decoy = `${filePath}.decoy-${attempt}`;
-      writeFileSync(decoy, "decoy", { mode: 0o600 });
-      decoys.push(decoy);
-      writeFileSync(filePath, contents, { mode: 0o600 });
-      chmodSync(filePath, 0o600);
-      if (statSync(filePath).ino !== originalIno) return originalIno;
-      unlinkSync(filePath);
-    }
-    throw new Error("could not recreate the approval on a different inode");
+    writeFileSync(filePath, contents, { mode: 0o600 });
+    chmodSync(filePath, 0o600);
   } finally {
-    for (const decoy of decoys) rmSync(decoy, { force: true });
+    rmSync(inodeHolder, { force: true });
   }
+  return originalIno;
 };
 
 const withState = (callback) => {

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
+import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, open, unlink } from "node:fs/promises";
+import { link, lstat, open, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 
 import {
@@ -9,10 +10,10 @@ import {
   assertSecureDirectoryBoundary,
   buildHandoverContext,
   captureSecureDirectoryBoundary,
+  consumeApprovalExactly,
   deliverThenConsume,
   readAndValidateHandover,
   readBoundedRegularFile,
-  unlinkSameFile,
   validateApproval,
   validateApprovalFileStat,
 } from "./handover-core.mjs";
@@ -126,28 +127,17 @@ if (input && ALLOWED_SOURCES.has(input.source) && typeof input.cwd === "string")
         emit,
         consume: async () => {
           await validateBoundary();
-          // Filesystems may reuse an unlinked inode number, so device and inode
-          // equality cannot prove the approval is unreplaced; the byte
-          // comparison below is the filesystem-independent check.
-          const currentApproval = await readBoundedRegularFile({
-            filePath: armedPath,
-            label: "approval",
+          await consumeApprovalExactly({
+            armedPath,
+            claimPath: `${armedPath}.claim-${randomUUID()}`,
+            identity: approvalFile.stat,
+            expectedBytes: approvalFile.bytes,
             maxBytes: MAX_APPROVAL_BYTES,
             openFlags: READ_FLAGS,
             openFile: open,
             lstatPath: lstat,
-          });
-          if (
-            !currentApproval.bytes.equals(approvalFile.bytes)
-            || currentApproval.stat.dev !== approvalFile.stat.dev
-            || currentApproval.stat.ino !== approvalFile.stat.ino
-          ) {
-            throw new Error("approval file identity mismatch");
-          }
-          await unlinkSameFile({
-            filePath: armedPath,
-            identity: approvalFile.stat,
-            lstatPath: lstat,
+            renameFile: rename,
+            linkFile: link,
             unlinkPath: unlink,
           });
         },
