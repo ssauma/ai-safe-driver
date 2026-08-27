@@ -126,6 +126,24 @@ if (input && ALLOWED_SOURCES.has(input.source) && typeof input.cwd === "string")
         emit,
         consume: async () => {
           await validateBoundary();
+          // Filesystems may reuse an unlinked inode number, so device and inode
+          // equality cannot prove the approval is unreplaced; the byte
+          // comparison below is the filesystem-independent check.
+          const currentApproval = await readBoundedRegularFile({
+            filePath: armedPath,
+            label: "approval",
+            maxBytes: MAX_APPROVAL_BYTES,
+            openFlags: READ_FLAGS,
+            openFile: open,
+            lstatPath: lstat,
+          });
+          if (
+            !currentApproval.bytes.equals(approvalFile.bytes)
+            || currentApproval.stat.dev !== approvalFile.stat.dev
+            || currentApproval.stat.ino !== approvalFile.stat.ino
+          ) {
+            throw new Error("approval file identity mismatch");
+          }
           await unlinkSameFile({
             filePath: armedPath,
             identity: approvalFile.stat,

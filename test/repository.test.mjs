@@ -842,6 +842,29 @@ const writeApprovalSync = (armedPath, approval) => {
   return bound;
 };
 
+// Some filesystems immediately reuse an unlinked inode number for the next
+// file created at the same path, so decoy files occupy freed inodes until the
+// recreated file provably lands on a different inode.
+const recreateOnDifferentInode = (filePath, contents) => {
+  const originalIno = statSync(filePath).ino;
+  unlinkSync(filePath);
+  const decoys = [];
+  try {
+    for (let attempt = 0; attempt < 32; attempt += 1) {
+      const decoy = `${filePath}.decoy-${attempt}`;
+      writeFileSync(decoy, "decoy", { mode: 0o600 });
+      decoys.push(decoy);
+      writeFileSync(filePath, contents, { mode: 0o600 });
+      chmodSync(filePath, 0o600);
+      if (statSync(filePath).ino !== originalIno) return originalIno;
+      unlinkSync(filePath);
+    }
+    throw new Error("could not recreate the approval on a different inode");
+  } finally {
+    for (const decoy of decoys) rmSync(decoy, { force: true });
+  }
+};
+
 const withState = (callback) => {
   const root = mkdtempSync(path.join(tmpdir(), "ai-safe-driver-"));
   const state = path.join(root, ".ai-safe-driver");
@@ -1047,9 +1070,8 @@ test("hook rejects approval inode replacement after arming", { skip: typeof proc
   writeFileSync(path.join(state, "handover.md"), handover);
   writeApprovalSync(armed, approvalFor(handover, "compact"));
   const copiedApproval = readFileSync(armed);
-  unlinkSync(armed);
-  writeFileSync(armed, copiedApproval, { mode: 0o600 });
-  chmodSync(armed, 0o600);
+  const originalIno = recreateOnDifferentInode(armed, copiedApproval);
+  assert.notEqual(statSync(armed).ino, originalIno);
 
   const result = runHook(root, "compact");
 
