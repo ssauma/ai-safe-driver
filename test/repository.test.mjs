@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 
 const name = "ai-safe-driver";
 const pluginRoot = `plugins/${name}`;
@@ -30,6 +31,7 @@ test("ships one canonical skill for both hosts", () => {
     `${skillRoot}/agents/openai.yaml`,
     `${pluginRoot}/hooks/hooks.json`,
     `${pluginRoot}/scripts/drift-detector.mjs`,
+    `${pluginRoot}/scripts/handover-core.mjs`,
     `${pluginRoot}/scripts/reinject-handover.mjs`,
     `${pluginRoot}/scripts/session-drift-hook.mjs`,
     `${pluginRoot}/templates/handover.md`,
@@ -560,6 +562,16 @@ test("defines an on-demand metaphorical dashboard and protects strict formats", 
   assert.match(skill, /At `75%` or `100%`, put the countersteering question/);
 });
 
+test("documents the bounded handover and compact delivery contract", () => {
+  const handover = read(`${skillRoot}/references/handover.md`);
+  assert.match(handover, /no larger than 6 KiB/);
+  assert.doesNotMatch(handover, /64 KiB/);
+  assert.match(handover, /next compact transition, whether the host triggers it manually or automatically/i);
+  assert.match(handover, /never initiates `?\/compact`?/i);
+  assert.match(handover, /does not acknowledge host or model receipt/i);
+  assert.match(handover, /does not guarantee exactly-once delivery/i);
+});
+
 test("does not describe a drifting session as operating normally", () => {
   for (const filePath of [
     "README.md",
@@ -657,6 +669,24 @@ const runHook = (cwd, source) => spawnSync(
   },
 );
 
+const runHookWithFailedStdout = (cwd, source) => spawnSync(
+  process.execPath,
+  [
+    "--input-type=module",
+    "--eval",
+    `process.stdout.write = (_payload, _encoding, callback) => {
+      callback(new Error("broken pipe"));
+      return false;
+    };
+    await import(${JSON.stringify(pathToFileURL(hookScript).href)});`,
+  ],
+  {
+    cwd,
+    encoding: "utf8",
+    input: JSON.stringify({ source, cwd, hook_event_name: "SessionStart" }),
+  },
+);
+
 const approvalFor = (handover, action, overrides = {}) => {
   const createdAt = new Date();
   const expiresAt = new Date(createdAt.getTime() + 10 * 60 * 1000);
@@ -705,6 +735,19 @@ test("hook loads a matching handover once and keeps the handover", () => withSta
   assert.equal(second.stdout, "");
 }));
 
+test("hook keeps approval when the stdout write callback reports failure", () => withState(({ root, state }) => {
+  const handover = validHandover();
+  mkdirSync(state);
+  const armed = path.join(state, "armed.json");
+  writeFileSync(path.join(state, "handover.md"), handover);
+  writeFileSync(armed, JSON.stringify(approvalFor(handover, "compact")));
+
+  const result = runHookWithFailedStdout(root, "compact");
+  assert.equal(result.status, 0);
+  assert.match(result.stderr, /broken pipe/);
+  assert.equal(existsSync(armed), true);
+}));
+
 test("hook rejects mismatched, changed, and expired approvals without consuming them", () => withState(({ root, state }) => {
   const handover = validHandover();
   mkdirSync(state);
@@ -740,7 +783,7 @@ test("hook accepts a separately approved clear transition", () => withState(({ r
   assert.equal(existsSync(path.join(state, "armed.json")), false);
 }));
 
-test("hook rejects symlinked and oversized handovers without consuming approval", () => withState(({ root, state }) => {
+test("hook rejects symlinked handovers without consuming approval", () => withState(({ root, state }) => {
   mkdirSync(state);
   const outside = path.join(root, "outside.md");
   const handoverPath = path.join(state, "handover.md");
@@ -752,8 +795,35 @@ test("hook rejects symlinked and oversized handovers without consuming approval"
   assert.equal(runHook(root, "compact").stdout, "");
   assert.equal(existsSync(armed), true);
 
-  rmSync(handoverPath);
-  const oversized = "x".repeat(64 * 1024 + 1);
+}));
+
+test("hook rejects a non-file handover before reading it", () => withState(({ root, state }) => {
+  mkdirSync(state);
+  const handoverPath = path.join(state, "handover.md");
+  const armed = path.join(state, "armed.json");
+  mkdirSync(handoverPath);
+  writeFileSync(armed, JSON.stringify(approvalFor(validHandover(), "compact")));
+
+  const result = runHook(root, "compact");
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /handover is not a regular file/);
+  assert.equal(existsSync(armed), true);
+}));
+
+test("hook accepts a valid handover below six KiB and rejects one byte over", () => withState(({ root, state }) => {
+  mkdirSync(state);
+  const handoverPath = path.join(state, "handover.md");
+  const armed = path.join(state, "armed.json");
+  const base = validHandover();
+  const belowCap = `${base}${"x".repeat(6 * 1024 - 1 - Buffer.byteLength(base))}`;
+  assert.equal(Buffer.byteLength(belowCap), 6 * 1024 - 1);
+  writeFileSync(handoverPath, belowCap);
+  writeFileSync(armed, JSON.stringify(approvalFor(belowCap, "compact")));
+  assert.notEqual(runHook(root, "compact").stdout, "");
+  assert.equal(existsSync(armed), false);
+
+  const oversized = `${base}${"x".repeat(6 * 1024 + 1 - Buffer.byteLength(base))}`;
+  assert.equal(Buffer.byteLength(oversized), 6 * 1024 + 1);
   writeFileSync(handoverPath, oversized);
   writeFileSync(armed, JSON.stringify(approvalFor(oversized, "compact")));
   assert.equal(runHook(root, "compact").stdout, "");

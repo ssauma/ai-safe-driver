@@ -29,7 +29,7 @@ Include:
 
 ## Arming and transition
 
-Before arming, verify that the handover is a regular non-symlink file, no larger than 64 KiB, and contains every canonical heading. If `.ai-safe-driver/armed.json` exists, stop and ask before replacing it.
+Before arming, verify that the handover is a regular non-symlink file, no larger than 6 KiB, and contains every canonical heading. If `.ai-safe-driver/armed.json` exists, stop and ask before replacing it.
 
 Write `armed.json` as one JSON object:
 
@@ -43,7 +43,9 @@ Write `armed.json` as one JSON object:
 }
 ```
 
-Set `action` to exactly `compact` or `clear`. The bundled `SessionStart` hook loads the handover only when the action matches the actual transition, approval is unexpired, and the digest still matches. It consumes only `armed.json` and keeps `handover.md` for review. The hook never writes the handover and never initiates `/compact` or `/clear`.
+Set `action` to exactly `compact` or `clear`. The bundled `SessionStart` hook loads the handover only when the action matches the actual transition, approval is unexpired, and the digest still matches. The hook never writes the handover and never initiates `/compact` or `/clear`. `action: compact` approves loading on the next compact transition, whether the host triggers it manually or automatically.
+
+The hook emits the complete host JSON payload before it consumes `armed.json`, and it keeps `handover.md` for review. A failed stdout emission leaves the approval available for a later host invocation. Successful stdout emission means only that the hook finished writing to its host output stream: it does not acknowledge host or model receipt, and it does not guarantee exactly-once delivery.
 
 After approval, tell the user to enter `/compact` for compaction or `/clear` for a fresh chat in Claude Code or Codex. Once the hook verifies and reloads the handover, acknowledge it only when the active output contract permits prose:
 
