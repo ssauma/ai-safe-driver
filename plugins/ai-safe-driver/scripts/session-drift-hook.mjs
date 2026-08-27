@@ -542,7 +542,6 @@ const main = async () => {
       hookEventName: "UserPromptSubmit",
       additionalContext: recoveryContext(reason),
     },
-    suppressOutput: true,
   }));
 };
 

@@ -535,7 +535,10 @@ test("ships drift detection hooks and keeps handover permission gated", () => {
   assert.equal(promptHook.command, 'node "${CLAUDE_PLUGIN_ROOT}/scripts/session-drift-hook.mjs"');
   assert.equal(promptHook.timeout, 5);
   assert.equal(promptHook.statusMessage, "Checking for a repeated correction cycle");
-  assert.equal(promptHook.additionalContextLimit, 1024);
+  assert.equal(Object.hasOwn(promptHook, "additionalContextLimit"), false);
+
+  const sessionHook = hookConfig.hooks.SessionStart[0].hooks[0];
+  assert.equal(sessionHook.additionalContextLimit, 5000);
 
   const stopHook = hookConfig.hooks.Stop[0].hooks[0];
   assert.deepEqual(Object.keys(stopHook).sort(), ["command", "timeout", "type"]);
@@ -637,6 +640,7 @@ test("hook loads a matching handover once and keeps the handover", () => withSta
   const first = runHook(root, "compact");
   assert.equal(first.status, 0);
   const output = JSON.parse(first.stdout);
+  assert.deepEqual(Object.keys(output).sort(), ["hookSpecificOutput"]);
   assert.match(output.hookSpecificOutput.additionalContext, /BEGIN HANDOVER/);
   assert.match(output.hookSpecificOutput.additionalContext, /preserve the exact JSON contract/i);
   assert.equal(existsSync(path.join(state, "armed.json")), false);

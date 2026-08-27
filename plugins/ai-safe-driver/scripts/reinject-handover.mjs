@@ -97,7 +97,6 @@ if (input && ALLOWED_SOURCES.has(input.source) && typeof input.cwd === "string")
         hookEventName: "SessionStart",
         additionalContext,
       },
-      suppressOutput: true,
     }));
   } catch (error) {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {

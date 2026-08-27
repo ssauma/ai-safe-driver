@@ -213,8 +213,9 @@ test("an acknowledged later recurrence injects bounded recovery context", () => 
   });
   assertSucceeded(result);
   const output = JSON.parse(result.stdout);
+  assert.deepEqual(Object.keys(output).sort(), ["hookSpecificOutput"]);
   assert.equal(output.hookSpecificOutput.hookEventName, "UserPromptSubmit");
-  assert.equal(output.suppressOutput, true);
+  assert.equal(Buffer.byteLength(output.hookSpecificOutput.additionalContext, "utf8") <= 320, true);
   assert.match(output.hookSpecificOutput.additionalContext, /acknowledged_recurrence/u);
   assertLightweightRecoveryContext(output.hookSpecificOutput.additionalContext);
 });

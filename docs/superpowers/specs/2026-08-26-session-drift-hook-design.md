@@ -107,6 +107,8 @@ After injection, the record enters a two-prompt cooldown. New evidence is still 
 
 Claude Code and Codex use the same classifier and state machine. Host-specific wrapper scripts may translate hook input and output, but they must produce the same categories and trigger decision for the same user and assistant text.
 
+Hook output contains only `hookSpecificOutput.hookEventName` and `hookSpecificOutput.additionalContext`. Claude Code ignores the retained `SessionStart.additionalContextLimit: 5000` manifest setting, while Codex uses it as the spill threshold. The `UserPromptSubmit` handler has no corresponding limit because its recovery context is already capped at 320 UTF-8 bytes.
+
 If a host omits a session identifier, the hook fails open without persistence and only handles an explicit health check or explicit tool-diagnosis phrase in the current prompt.
 
 ## Privacy and safety
