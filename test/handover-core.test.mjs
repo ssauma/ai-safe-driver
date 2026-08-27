@@ -35,6 +35,10 @@ const regularStat = (size = Buffer.byteLength(validHandover)) => ({
   dev: 1,
   ino: 2,
   size,
+  uid: 501,
+  mode: 0o100600,
+  mtimeMs: 1,
+  ctimeMs: 1,
   isFile: () => true,
   isSymbolicLink: () => false,
 });
@@ -73,7 +77,7 @@ const fakeHandle = ({ content, stat, onRead = () => {} }) => {
   let closed = false;
   return {
     handle: {
-      stat: async () => stat,
+      stat: async () => (typeof stat === "function" ? stat() : stat),
       read: async (target, offset, length) => {
         onRead(length);
         const bytesRead = content.copy(target, offset, position, position + length);
@@ -174,6 +178,69 @@ test("bounded reader rejects the cap plus one byte even when the opened stat was
   assert.equal(file.isClosed(), true);
 });
 
+test("bounded reader rejects growth after its trusted pre-read snapshot", async () => {
+  const content = Buffer.from("published later");
+  const before = regularStat(0);
+  const after = { ...before, size: content.length, mtimeMs: 2, ctimeMs: 2 };
+  let handleStats = 0;
+  let pathStats = 0;
+  const file = fakeHandle({
+    content,
+    stat: () => {
+      handleStats += 1;
+      return handleStats === 1 ? before : after;
+    },
+  });
+
+  await assert.rejects(() => readBoundedRegularFile({
+    filePath: "armed.json",
+    label: "approval",
+    maxBytes: MAX_APPROVAL_BYTES,
+    openFlags: 456,
+    openFile: async () => file.handle,
+    lstatPath: async () => {
+      pathStats += 1;
+      return pathStats <= 2 ? before : after;
+    },
+  }), /approval changed during read/);
+
+  assert.equal(handleStats, 2);
+  assert.equal(pathStats, 3);
+  assert.equal(file.isClosed(), true);
+});
+
+test("bounded reader rejects post-read path replacement and short reads", async () => {
+  const content = Buffer.from("short");
+  const stable = regularStat(content.length + 1);
+  let pathStats = 0;
+  const shortFile = fakeHandle({ content, stat: stable });
+  await assert.rejects(() => readBoundedRegularFile({
+    filePath: "armed.json",
+    label: "approval",
+    maxBytes: MAX_APPROVAL_BYTES,
+    openFlags: 456,
+    openFile: async () => shortFile.handle,
+    lstatPath: async () => stable,
+  }), /approval changed during read/);
+
+  const exact = Buffer.from("complete");
+  const opened = regularStat(exact.length);
+  const replaced = { ...opened, ino: opened.ino + 1 };
+  const replacedFile = fakeHandle({ content: exact, stat: opened });
+  let replacementPathStats = 0;
+  await assert.rejects(() => readBoundedRegularFile({
+    filePath: "armed.json",
+    label: "approval",
+    maxBytes: MAX_APPROVAL_BYTES,
+    openFlags: 456,
+    openFile: async () => replacedFile.handle,
+    lstatPath: async () => {
+      replacementPathStats += 1;
+      return replacementPathStats === 3 ? replaced : opened;
+    },
+  }), /approval changed during read/);
+});
+
 test("handover document validation returns its verified digest", () => {
   assert.deepEqual(
     validateHandoverDocument({ content: validHandover, stat: regularStat() }),
@@ -205,6 +272,32 @@ test("same-handle validation hashes raw bytes and decodes UTF-8 strictly", async
       lstatPath: async () => malformedStat,
     }), /handover is not valid UTF-8/);
   }
+});
+
+test("same-handle handover validation enforces POSIX owner and write permissions", async () => {
+  for (const [stat, expected] of [
+    [{ ...regularStat(), uid: 502 }, /handover has unsafe owner/],
+    [{ ...regularStat(), mode: 0o100620 }, /handover has unsafe permissions/],
+  ]) {
+    const file = fakeHandle({ content: Buffer.from(validHandover), stat });
+    await assert.rejects(() => readAndValidateHandover({
+      filePath: "handover.md",
+      openFlags: 0,
+      openFile: async () => file.handle,
+      lstatPath: async () => stat,
+      uid: 501,
+    }), expected);
+  }
+
+  const nonPosixStat = { ...regularStat(), uid: 502, mode: 0o100666 };
+  const nonPosixFile = fakeHandle({ content: Buffer.from(validHandover), stat: nonPosixStat });
+  await assert.doesNotReject(() => readAndValidateHandover({
+    filePath: "handover.md",
+    openFlags: 0,
+    openFile: async () => nonPosixFile.handle,
+    lstatPath: async () => nonPosixStat,
+    uid: undefined,
+  }));
 });
 
 test("secure-directory validation enforces POSIX owner and write permissions only when available", () => {
@@ -241,6 +334,10 @@ test("approval-file validation binds POSIX mode, owner, and inode", () => {
   );
   assert.throws(
     () => validateApprovalFileStat({ approval, stat: { ...stat, ino: 9 }, uid: 501 }),
+    /approval file identity mismatch/,
+  );
+  assert.throws(
+    () => validateApprovalFileStat({ approval, stat: { ...stat, ino: 9 }, uid: undefined }),
     /approval file identity mismatch/,
   );
 });
@@ -367,206 +464,309 @@ test("buildApproval creates a bounded approval record", () => {
   );
 });
 
-const persistenceHandle = ({ failAt, stat }) => {
-  let invalidated = false;
-  let closeCalls = 0;
-  let chmodCalls = 0;
-  let syncCalls = 0;
-  return {
-    handle: {
-      stat: async () => stat,
-      chmod: async () => {
-        chmodCalls += 1;
-        if (failAt === "chmod" && chmodCalls === 1) throw new Error("chmod failed");
-        if (failAt === "final-chmod" && chmodCalls === 3) throw new Error("final chmod failed");
-      },
-      writeFile: async () => { if (failAt === "write") throw new Error("write failed"); },
-      sync: async () => {
-        syncCalls += 1;
-        if (failAt === "sync" && syncCalls === 1) throw new Error("sync failed");
-        if (failAt === "final-sync" && syncCalls === 2) throw new Error("final sync failed");
-      },
-      close: async () => {
-        closeCalls += 1;
-        if (failAt === "close" && closeCalls === 1) throw new Error("close failed");
-      },
-      truncate: async () => { invalidated = true; },
+const approvalFileStat = (size = 0) => ({
+  ...regularStat(size),
+  dev: 7,
+  ino: 8,
+  uid: 501,
+  mode: 0o100600,
+});
+
+const approvalWriter = ({ failAt } = {}) => {
+  const events = [];
+  let raw = "";
+  let size = 0;
+  const handle = {
+    stat: async () => approvalFileStat(size),
+    chmod: async (mode) => {
+      events.push(`chmod:${mode.toString(8)}`);
+      if (failAt === "chmod") throw new Error("chmod failed");
     },
-    wasInvalidated: () => invalidated,
+    writeFile: async (content) => {
+      events.push("write");
+      if (failAt === "write") throw new Error("write failed");
+      raw = content;
+      size = Buffer.byteLength(content);
+    },
+    sync: async () => {
+      events.push("sync");
+      if (failAt === "sync") throw new Error("sync failed");
+    },
+    close: async () => {
+      events.push("close");
+      if (failAt === "close") throw new Error("close failed");
+    },
+  };
+  return {
+    handle,
+    events,
+    getRaw: () => raw,
+    getStat: () => approvalFileStat(size),
   };
 };
 
-test("exclusive approval persistence removes or invalidates its own inode on every post-create failure", async () => {
-  for (const failAt of ["chmod", "write", "sync", "final-chmod", "close"]) {
-    const stat = { ...regularStat(0), dev: 7, ino: 8, uid: 501, mode: 0o100600 };
-    const file = persistenceHandle({ failAt, stat });
-    let removed = false;
+test("approval is fully prepared on a private inode before exclusive final-name publication", async () => {
+  const file = approvalWriter();
+  const events = [];
+  const result = await writeExclusiveApproval({
+    armedPath: ".state/armed.json",
+    privatePath: ".state/.armed-unpredictable.tmp",
+    approval: validApproval(),
+    openFile: async (filePath, flags, mode) => {
+      assert.deepEqual([filePath, flags, mode], [".state/.armed-unpredictable.tmp", "wx", 0o600]);
+      return file.handle;
+    },
+    linkFile: async (source, destination) => {
+      events.push("link");
+      assert.deepEqual([source, destination], [".state/.armed-unpredictable.tmp", ".state/armed.json"]);
+      assert.deepEqual(file.events, ["chmod:600", "write", "sync", "close"]);
+    },
+    unlinkFile: async (filePath) => { events.push(`unlink:${filePath}`); },
+    lstatPath: async () => file.getStat(),
+    finalOpenFlags: "read-no-follow",
+    validateBoundary: async () => { events.push("boundary"); },
+    uid: 501,
+  });
+
+  const persisted = JSON.parse(file.getRaw());
+  assert.equal(persisted.approval_dev, 7);
+  assert.equal(persisted.approval_ino, 8);
+  assert.equal(result.approval_dev, 7);
+  assert.equal(result.approval_ino, 8);
+  assert.deepEqual(events, [
+    "boundary",
+    "boundary",
+    "link",
+    "unlink:.state/.armed-unpredictable.tmp",
+  ]);
+});
+
+test("every pre-publication failure leaves the final approval name absent", async () => {
+  for (const failAt of ["chmod", "write", "sync", "close", "boundary", "link"]) {
+    const file = approvalWriter({ failAt: failAt === "boundary" || failAt === "link" ? undefined : failAt });
+    let finalVisible = false;
+    let privateRemoved = false;
+    let boundaryCalls = 0;
+    const failure = Object.assign(new Error(`${failAt} failed`), failAt === "link" ? { code: "EIO" } : {});
+
     await assert.rejects(() => writeExclusiveApproval({
       armedPath: "armed.json",
+      privatePath: ".armed-private.tmp",
       approval: validApproval(),
       openFile: async () => file.handle,
-      lstatPath: async () => stat,
-      unlinkPath: async () => { removed = true; },
-      validateBoundary: async () => {},
+      linkFile: async () => {
+        if (failAt === "link") throw failure;
+        finalVisible = true;
+      },
+      unlinkFile: async () => { privateRemoved = true; },
+      lstatPath: async (filePath) => {
+        if (filePath === "armed.json") throw Object.assign(new Error("missing"), { code: "ENOENT" });
+        return file.getStat();
+      },
+      finalOpenFlags: "read-no-follow",
+      validateBoundary: async () => {
+        boundaryCalls += 1;
+        if (failAt === "boundary" && boundaryCalls === 2) throw failure;
+      },
       uid: 501,
     }), /approval could not be persisted/);
-    assert.equal(file.wasInvalidated(), true, failAt);
-    assert.equal(removed, false, `${failAt} must not use pathname unlink cleanup`);
+
+    assert.equal(finalVisible, false, failAt);
+    assert.equal(privateRemoved, true, failAt);
   }
 });
 
-test("approval is published only after every fallible persistence gate", async () => {
-  const stat = { ...regularStat(0), dev: 7, ino: 8, uid: 501, mode: 0o100600 };
-  const file = persistenceHandle({ stat });
-  const modes = [];
-  file.handle.chmod = async (mode) => { modes.push(mode); };
-  let checks = 0;
-
+test("exclusive publication never overwrites armed.json and post-commit cleanup is best effort", async () => {
+  const existing = approvalWriter();
+  const replacement = { ...existing.getStat(), ino: 9 };
+  const existsError = Object.assign(new Error("exists"), { code: "EEXIST" });
+  let privateRemoved = false;
   await assert.rejects(() => writeExclusiveApproval({
     armedPath: "armed.json",
+    privatePath: ".armed-private.tmp",
     approval: validApproval(),
-    openFile: async () => file.handle,
-    validateBoundary: async () => {
-      checks += 1;
-      if (checks === 2) throw new Error("late boundary failure");
-    },
+    openFile: async () => existing.handle,
+    linkFile: async () => { throw existsError; },
+    unlinkFile: async () => { privateRemoved = true; },
+    lstatPath: async (filePath) => filePath === "armed.json" ? replacement : existing.getStat(),
+    finalOpenFlags: "read-no-follow",
+    validateBoundary: async () => {},
     uid: 501,
-  }), /approval could not be persisted/);
+  }), (error) => error.code === "EEXIST");
+  assert.equal(privateRemoved, true);
 
-  assert.equal(modes.filter((mode) => mode === 0o600).length, 1);
-  assert.equal(file.wasInvalidated(), true);
+  const committed = approvalWriter();
+  let linked = false;
+  await assert.doesNotReject(() => writeExclusiveApproval({
+    armedPath: "armed.json",
+    privatePath: ".armed-private.tmp",
+    approval: validApproval(),
+    openFile: async () => committed.handle,
+    linkFile: async () => { linked = true; },
+    unlinkFile: async () => { throw new Error("private cleanup failed"); },
+    lstatPath: async () => committed.getStat(),
+    finalOpenFlags: "read-no-follow",
+    validateBoundary: async () => {},
+    uid: 501,
+  }));
+  assert.equal(linked, true);
 });
 
-test("failed persistence never deletes a replacement inode", async () => {
-  const created = { ...regularStat(0), dev: 7, ino: 8, uid: 501, mode: 0o100600 };
-  const replacement = { ...created, ino: 9 };
-  const file = persistenceHandle({ failAt: "sync", stat: created });
-  let removed = false;
+test("link-created-then-error is recovered as a committed publication", async () => {
+  const file = approvalWriter();
+  let finalNode;
+  let privateRemoved = false;
+  const makeReader = () => {
+    let position = 0;
+    return {
+      stat: async () => file.getStat(),
+      read: async (target, offset, length) => {
+        const bytes = Buffer.from(finalNode);
+        const bytesRead = bytes.copy(target, offset, position, position + length);
+        position += bytesRead;
+        return { bytesRead, buffer: target };
+      },
+      close: async () => {},
+    };
+  };
+
+  const result = await writeExclusiveApproval({
+    armedPath: "armed.json",
+    privatePath: ".armed-private.tmp",
+    approval: validApproval(),
+    openFile: async (filePath, flags) => flags === "wx" ? file.handle : makeReader(),
+    linkFile: async () => {
+      finalNode = file.getRaw();
+      throw Object.assign(new Error("link reply lost"), { code: "EIO" });
+    },
+    unlinkFile: async () => { privateRemoved = true; },
+    lstatPath: async (filePath) => {
+      if (filePath === "armed.json" && finalNode === undefined) {
+        throw Object.assign(new Error("missing"), { code: "ENOENT" });
+      }
+      return file.getStat();
+    },
+    finalOpenFlags: "read-no-follow",
+    validateBoundary: async () => {},
+    uid: 501,
+  });
+
+  assert.equal(result.approval_ino, 8);
+  assert.equal(privateRemoved, true);
+  assert.notEqual(finalNode, undefined);
+});
+
+test("source or cleanup replacement is never linked or unlinked", async () => {
+  const file = approvalWriter();
+  const replacement = { ...file.getStat(), ino: 9 };
+  let linked = false;
+  let unlinked = false;
 
   await assert.rejects(() => writeExclusiveApproval({
     armedPath: "armed.json",
+    privatePath: ".armed-private.tmp",
     approval: validApproval(),
     openFile: async () => file.handle,
+    linkFile: async () => { linked = true; },
+    unlinkFile: async () => { unlinked = true; },
     lstatPath: async () => replacement,
-    unlinkPath: async () => { removed = true; },
+    finalOpenFlags: "read-no-follow",
     validateBoundary: async () => {},
     uid: 501,
   }), /approval could not be persisted/);
 
-  assert.equal(removed, false);
-  assert.equal(file.wasInvalidated(), true);
+  assert.equal(linked, false);
+  assert.equal(unlinked, false);
 });
 
-test("cleanup reopens and invalidates only the created inode when the original handle cannot clean up", async () => {
-  const created = { ...regularStat(0), dev: 7, ino: 8, uid: 501, mode: 0o100600 };
-  const primary = persistenceHandle({ failAt: "sync", stat: created });
-  primary.handle.truncate = async () => { throw new Error("primary handle unavailable"); };
-  const cleanup = persistenceHandle({ stat: created });
-  const cleanupModes = [];
-  cleanup.handle.chmod = async (mode) => { cleanupModes.push(mode); };
-  let openCalls = 0;
-  let removed = false;
+test("a staged consumer cannot open the final name while producer persistence is paused", async () => {
+  const nodes = new Map();
+  let releaseSync;
+  let reachedSync;
+  const syncReached = new Promise((resolve) => { reachedSync = resolve; });
+  const syncRelease = new Promise((resolve) => { releaseSync = resolve; });
+  const statFor = (node) => approvalFileStat(Buffer.byteLength(node.raw));
+  const makeReader = (node) => {
+    let position = 0;
+    return {
+      stat: async () => statFor(node),
+      read: async (target, offset, length) => {
+        const content = Buffer.from(node.raw);
+        const bytesRead = content.copy(target, offset, position, position + length);
+        position += bytesRead;
+        return { bytesRead, buffer: target };
+      },
+      close: async () => {},
+    };
+  };
+  const node = { raw: "" };
+  const writerHandle = {
+    stat: async () => statFor(node),
+    chmod: async () => {},
+    writeFile: async (raw) => { node.raw = raw; },
+    sync: async () => { reachedSync(); await syncRelease; },
+    close: async () => {},
+  };
+  const missing = () => Object.assign(new Error("missing"), { code: "ENOENT" });
+  const openFile = async (filePath, flags) => {
+    if (flags === "wx") {
+      nodes.set(filePath, node);
+      return writerHandle;
+    }
+    const opened = nodes.get(filePath);
+    if (!opened) throw missing();
+    return makeReader(opened);
+  };
+  const lstatPath = async (filePath) => {
+    const opened = nodes.get(filePath);
+    if (!opened) throw missing();
+    return statFor(opened);
+  };
 
-  await assert.rejects(() => writeExclusiveApproval({
+  const writing = writeExclusiveApproval({
     armedPath: "armed.json",
+    privatePath: ".armed-private.tmp",
     approval: validApproval(),
-    openFile: async () => {
-      openCalls += 1;
-      return openCalls === 1 ? primary.handle : cleanup.handle;
+    openFile,
+    linkFile: async (source, destination) => {
+      if (nodes.has(destination)) throw Object.assign(new Error("exists"), { code: "EEXIST" });
+      nodes.set(destination, nodes.get(source));
     },
-    lstatPath: async () => created,
-    unlinkPath: async () => { removed = true; },
+    unlinkFile: async (filePath) => { nodes.delete(filePath); },
+    lstatPath,
+    finalOpenFlags: "read-no-follow",
     validateBoundary: async () => {},
     uid: 501,
-  }), /approval could not be persisted/);
+  });
 
-  assert.equal(openCalls, 2);
-  assert.deepEqual(cleanupModes, [0o000]);
-  assert.equal(cleanup.wasInvalidated(), true);
-  assert.equal(removed, false);
-});
+  await syncReached;
+  let premature;
+  try {
+    premature = await readBoundedRegularFile({
+      filePath: "armed.json",
+      label: "approval",
+      maxBytes: MAX_APPROVAL_BYTES,
+      openFlags: "read",
+      openFile,
+      lstatPath,
+    });
+  } catch (error) {
+    assert.equal(error.code, "ENOENT");
+  } finally {
+    releaseSync();
+  }
+  await writing;
+  assert.equal(premature, undefined);
 
-test("cleanup failure is surfaced instead of being swallowed", async () => {
-  const created = { ...regularStat(0), dev: 7, ino: 8, uid: 501, mode: 0o100600 };
-  const primary = persistenceHandle({ failAt: "sync", stat: created });
-  primary.handle.truncate = async () => { throw new Error("primary cleanup failed"); };
-  let openCalls = 0;
-
-  await assert.rejects(() => writeExclusiveApproval({
-    armedPath: "armed.json",
-    approval: validApproval(),
-    openFile: async () => {
-      openCalls += 1;
-      if (openCalls === 1) return primary.handle;
-      throw new Error("cleanup reopen failed");
-    },
-    lstatPath: async () => created,
-    unlinkPath: async () => { throw new Error("must not unlink"); },
-    validateBoundary: async () => {},
-    uid: 501,
-  }), /approval could not be safely invalidated/);
-});
-
-test("cleanup identity mismatch is surfaced instead of treated as safe invalidation", async () => {
-  const created = { ...regularStat(0), dev: 7, ino: 8, uid: 501, mode: 0o100600 };
-  const replacement = { ...created, ino: 9 };
-  const primary = persistenceHandle({ failAt: "sync", stat: created });
-  primary.handle.truncate = async () => { throw new Error("primary cleanup failed"); };
-  const cleanup = persistenceHandle({ stat: replacement });
-  let openCalls = 0;
-
-  await assert.rejects(() => writeExclusiveApproval({
-    armedPath: "armed.json",
-    approval: validApproval(),
-    openFile: async () => {
-      openCalls += 1;
-      return openCalls === 1 ? primary.handle : cleanup.handle;
-    },
-    validateBoundary: async () => {},
-    uid: 501,
-  }), /approval could not be safely invalidated/);
-
-  assert.equal(cleanup.wasInvalidated(), false);
-});
-
-test("initial stat failure neutralizes and closes the exclusively created file", async () => {
-  const file = persistenceHandle({ stat: regularStat(0) });
-  let closeCalls = 0;
-  file.handle.stat = async () => { throw new Error("stat failed"); };
-  file.handle.close = async () => { closeCalls += 1; };
-
-  await assert.rejects(() => writeExclusiveApproval({
-    armedPath: "armed.json",
-    approval: validApproval(),
-    openFile: async () => file.handle,
-    validateBoundary: async () => {},
-    uid: 501,
-  }), /approval could not be persisted/);
-
-  assert.equal(file.wasInvalidated(), true);
-  assert.equal(closeCalls, 1);
-});
-
-test("directory replacement during persistence invalidates the created approval", async () => {
-  const stat = { ...regularStat(0), dev: 7, ino: 8, uid: 501, mode: 0o100600 };
-  const file = persistenceHandle({ stat });
-  let checks = 0;
-  let removed = false;
-
-  await assert.rejects(() => writeExclusiveApproval({
-    armedPath: "armed.json",
-    approval: validApproval(),
-    openFile: async () => file.handle,
-    lstatPath: async () => stat,
-    unlinkPath: async () => { removed = true; },
-    validateBoundary: async () => {
-      checks += 1;
-      if (checks === 2) throw new Error("handover directory identity changed");
-    },
-    uid: 501,
-  }), /approval could not be persisted/);
-
-  assert.equal(removed || file.wasInvalidated(), true);
+  const published = await readBoundedRegularFile({
+    filePath: "armed.json",
+    label: "approval",
+    maxBytes: MAX_APPROVAL_BYTES,
+    openFlags: "read",
+    openFile,
+    lstatPath,
+  });
+  assert.equal(JSON.parse(published.bytes).approval_ino, 8);
 });
 
 test("failed emission does not consume approval", async () => {

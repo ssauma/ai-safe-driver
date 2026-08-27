@@ -8,6 +8,12 @@ const capReason = (label, maxBytes) => `${label} exceeds ${maxBytes / 1024} KiB`
 const regularFileReason = (label) => `${label} is not a regular file`;
 const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
 const sameIdentity = (left, right) => left.dev === right.dev && left.ino === right.ino;
+const sameStableFileStat = (left, right) => sameIdentity(left, right)
+  && left.size === right.size
+  && left.mode === right.mode
+  && left.uid === right.uid
+  && left.mtimeMs === right.mtimeMs
+  && left.ctimeMs === right.ctimeMs;
 
 export const readBoundedRegularFile = async ({
   filePath,
@@ -59,7 +65,21 @@ export const readBoundedRegularFile = async ({
     }
     if (totalBytes > maxBytes) throw new Error(capReason(label, maxBytes));
 
-    return { bytes: Buffer.concat(chunks, totalBytes), stat: openedStat };
+    const bytes = Buffer.concat(chunks, totalBytes);
+    const afterReadStat = await handle.stat();
+    const postReadStat = await lstatPath(filePath);
+    if (
+      !afterReadStat.isFile()
+      || !postReadStat.isFile()
+      || postReadStat.isSymbolicLink()
+      || !sameStableFileStat(openedStat, afterReadStat)
+      || !sameStableFileStat(openedStat, postReadStat)
+      || bytes.length !== openedStat.size
+    ) {
+      throw new Error(`${label} changed during read`);
+    }
+
+    return { bytes, stat: afterReadStat };
   } finally {
     await handle.close();
   }
@@ -80,17 +100,26 @@ const REQUIRED_HEADINGS = [
   "## Transition rationale",
 ];
 
-export const validateHandoverStat = (stat) => {
+export const validateHandoverStat = (stat, uid) => {
   if (!stat.isFile() || stat.isSymbolicLink()) {
     throw new Error("handover is not a regular file");
   }
   if (stat.size > MAX_HANDOVER_BYTES) {
     throw new Error("handover exceeds 6 KiB");
   }
+  if (uid !== undefined) {
+    if (stat.uid !== uid) throw new Error("handover has unsafe owner");
+    if ((stat.mode & 0o022) !== 0) throw new Error("handover has unsafe permissions");
+  }
 };
 
-export const validateHandoverDocument = ({ content, stat, bytes = Buffer.from(content, "utf8") }) => {
-  validateHandoverStat(stat);
+export const validateHandoverDocument = ({
+  content,
+  stat,
+  bytes = Buffer.from(content, "utf8"),
+  uid,
+}) => {
+  validateHandoverStat(stat, uid);
 
   for (const heading of REQUIRED_HEADINGS) {
     if (!content.includes(`${heading}\n`)) throw new Error(`handover is missing ${heading}`);
@@ -106,6 +135,7 @@ export const readAndValidateHandover = async ({
   openFlags,
   openFile,
   lstatPath,
+  uid,
 }) => {
   const file = await readBoundedRegularFile({
     filePath,
@@ -125,7 +155,7 @@ export const readAndValidateHandover = async ({
     bytes: file.bytes,
     content,
     stat: file.stat,
-    ...validateHandoverDocument({ content, stat: file.stat, bytes: file.bytes }),
+    ...validateHandoverDocument({ content, stat: file.stat, bytes: file.bytes, uid }),
   };
 };
 
@@ -174,9 +204,10 @@ export const assertSecureDirectoryBoundary = async ({
 
 export const validateApprovalFileStat = ({ approval, stat, uid }) => {
   if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("approval is not a regular file");
-  if (uid === undefined) return;
-  if (stat.uid !== uid) throw new Error("approval has unsafe owner");
-  if ((stat.mode & 0o777) !== 0o600) throw new Error("approval has unsafe permissions");
+  if (uid !== undefined) {
+    if (stat.uid !== uid) throw new Error("approval has unsafe owner");
+    if ((stat.mode & 0o777) !== 0o600) throw new Error("approval has unsafe permissions");
+  }
   if (
     !Number.isFinite(approval.approval_dev)
     || !Number.isFinite(approval.approval_ino)
@@ -187,59 +218,65 @@ export const validateApprovalFileStat = ({ approval, stat, uid }) => {
   }
 };
 
-const invalidateHandle = async (handle) => {
-  await handle.chmod(0o000);
-  await handle.truncate(0);
-  await handle.sync();
+const isMissing = (error) => error
+  && typeof error === "object"
+  && "code" in error
+  && error.code === "ENOENT";
+
+const unlinkPrivateIfOwned = async ({
+  privatePath,
+  identity,
+  lstatPath,
+  unlinkFile,
+}) => {
+  if (!identity) return;
+  try {
+    const current = await lstatPath(privatePath);
+    if (
+      current.isFile()
+      && !current.isSymbolicLink()
+      && sameIdentity(identity, current)
+    ) {
+      await unlinkFile(privatePath);
+    }
+  } catch (error) {
+    if (!isMissing(error)) {
+      // Private-name cleanup is best effort and never widens to another inode.
+    }
+  }
 };
 
-const invalidateCreatedFile = async ({
-  handle,
-  fallbackHandle,
-  identity,
+const finalNameMatches = async ({
   armedPath,
+  identity,
+  finalOpenFlags,
   openFile,
-  cleanupOpenFlags,
+  lstatPath,
 }) => {
+  let handle;
   try {
-    await invalidateHandle(handle);
-    return;
-  } catch (primaryError) {
-    // A close failure can leave the original descriptor unusable; reopen and fstat before mutation.
-    if (!identity) {
-      throw new Error("approval could not be safely invalidated", { cause: primaryError });
-    }
-  }
-
-  if (fallbackHandle) {
-    try {
-      const fallbackStat = await fallbackHandle.stat();
-      if (!fallbackStat.isFile() || !sameIdentity(identity, fallbackStat)) {
-        throw new Error("approval cleanup identity mismatch");
-      }
-      await invalidateHandle(fallbackHandle);
-      return;
-    } catch (error) {
-      throw new Error("approval could not be safely invalidated", { cause: error });
-    }
-  }
-
-  let cleanupHandle;
-  try {
-    cleanupHandle = await openFile(armedPath, cleanupOpenFlags);
-    const current = await cleanupHandle.stat();
-    if (!current.isFile() || !sameIdentity(identity, current)) {
-      throw new Error("approval cleanup identity mismatch");
-    }
-    await invalidateHandle(cleanupHandle);
-  } catch (error) {
-    throw new Error("approval could not be safely invalidated", { cause: error });
+    const before = await lstatPath(armedPath);
+    if (
+      !before.isFile()
+      || before.isSymbolicLink()
+      || !sameIdentity(identity, before)
+    ) return false;
+    handle = await openFile(armedPath, finalOpenFlags);
+    const opened = await handle.stat();
+    const after = await lstatPath(armedPath);
+    return opened.isFile()
+      && after.isFile()
+      && !after.isSymbolicLink()
+      && sameIdentity(identity, opened)
+      && sameIdentity(identity, after);
+  } catch {
+    return false;
   } finally {
-    if (cleanupHandle) {
+    if (handle) {
       try {
-        await cleanupHandle.close();
+        await handle.close();
       } catch {
-        // The inode was invalidated before this best-effort close.
+        // Identity inspection already completed or failed closed.
       }
     }
   }
@@ -247,83 +284,102 @@ const invalidateCreatedFile = async ({
 
 export const writeExclusiveApproval = async ({
   armedPath,
+  privatePath,
   approval,
   openFile,
+  linkFile,
+  unlinkFile,
+  lstatPath,
+  finalOpenFlags,
   validateBoundary,
   uid,
-  cleanupOpenFlags = "r+",
 }) => {
   let handle;
-  let publicationHandle;
-  let identity;
+  let created = false;
   let closed = false;
+  let published = false;
+  let identity;
+  let persistedApproval;
   try {
-    handle = await openFile(armedPath, "wx", 0o600);
+    await validateBoundary();
+    handle = await openFile(privatePath, "wx", 0o600);
+    created = true;
     const stat = await handle.stat();
     if (!stat.isFile()) throw new Error("approval is not a regular file");
     identity = { dev: stat.dev, ino: stat.ino };
-    // open(2)'s requested mode is filtered by umask; establish the promised
-    // owner-only access before retaining a second descriptor for final publication.
     await handle.chmod(0o600);
-    publicationHandle = await openFile(armedPath, cleanupOpenFlags);
-    const publicationStat = await publicationHandle.stat();
-    if (!publicationStat.isFile() || !sameIdentity(identity, publicationStat)) {
-      throw new Error("approval publication identity mismatch");
+    const securedStat = await handle.stat();
+    if (!securedStat.isFile() || !sameIdentity(stat, securedStat)) {
+      throw new Error("approval file identity changed");
     }
-    await handle.chmod(0o000);
-    await validateBoundary();
-    const persistedApproval = uid === undefined
-      ? approval
-      : { ...approval, approval_dev: stat.dev, approval_ino: stat.ino };
-    await handle.writeFile(`${JSON.stringify(persistedApproval)}\n`, "utf8");
+    if (uid !== undefined) {
+      if (securedStat.uid !== uid) throw new Error("approval has unsafe owner");
+      if ((securedStat.mode & 0o777) !== 0o600) {
+        throw new Error("approval has unsafe permissions");
+      }
+    }
+    persistedApproval = {
+      ...approval,
+      approval_dev: securedStat.dev,
+      approval_ino: securedStat.ino,
+    };
+    const rawApproval = `${JSON.stringify(persistedApproval)}\n`;
+    await handle.writeFile(rawApproval, "utf8");
     await handle.sync();
-    await validateBoundary();
+    const preparedStat = await handle.stat();
+    if (
+      !preparedStat.isFile()
+      || !sameIdentity(identity, preparedStat)
+      || preparedStat.size !== Buffer.byteLength(rawApproval)
+    ) {
+      throw new Error("approval changed during persistence");
+    }
+    if (uid !== undefined) {
+      if (preparedStat.uid !== uid) throw new Error("approval has unsafe owner");
+      if ((preparedStat.mode & 0o777) !== 0o600) {
+        throw new Error("approval has unsafe permissions");
+      }
+    }
     await handle.close();
     closed = true;
-    handle = publicationHandle;
-    publicationHandle = undefined;
-    closed = false;
     await validateBoundary();
-    await handle.chmod(0o600);
-    // Publication is the final failure gate. Closing an already-fsynced descriptor
-    // cannot turn a successful approval into a reported failure.
-    try {
-      await handle.close();
-    } catch {
-      // Best-effort descriptor release after successful publication.
+    const sourceStat = await lstatPath(privatePath);
+    if (
+      !sourceStat.isFile()
+      || sourceStat.isSymbolicLink()
+      || !sameStableFileStat(preparedStat, sourceStat)
+    ) {
+      throw new Error("approval private file identity changed");
     }
-    closed = true;
+    try {
+      await linkFile(privatePath, armedPath);
+      published = true;
+    } catch (linkError) {
+      published = await finalNameMatches({
+        armedPath,
+        identity,
+        finalOpenFlags,
+        openFile,
+        lstatPath,
+      });
+      if (!published) throw linkError;
+    }
+    await unlinkPrivateIfOwned({ privatePath, identity, lstatPath, unlinkFile });
     return persistedApproval;
   } catch (error) {
-    if (!handle) throw error;
-    let cleanupError;
-    try {
-      await invalidateCreatedFile({
-        handle,
-        fallbackHandle: publicationHandle,
-        identity,
-        armedPath,
-        openFile,
-        cleanupOpenFlags,
-      });
-    } catch (failure) {
-      cleanupError = failure;
-    }
-    if (!closed) {
+    if (handle && !closed) {
       try {
         await handle.close();
       } catch {
-        // Invalidation already ran; do not hide the persistence refusal.
+        // No final name exists before publication; cleanup continues by private name.
       }
     }
-    if (publicationHandle) {
-      try {
-        await publicationHandle.close();
-      } catch {
-        // Invalidation already ran; do not hide the persistence refusal.
-      }
+    if (created && !published) {
+      await unlinkPrivateIfOwned({ privatePath, identity, lstatPath, unlinkFile });
     }
-    if (cleanupError) throw cleanupError;
+    if (error && typeof error === "object" && "code" in error && error.code === "EEXIST") {
+      throw error;
+    }
     throw new Error("approval could not be persisted", { cause: error });
   }
 };

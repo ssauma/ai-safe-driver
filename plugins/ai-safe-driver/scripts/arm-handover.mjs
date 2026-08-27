@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, open, realpath } from "node:fs/promises";
+import { link, lstat, open, realpath, unlink } from "node:fs/promises";
 import path from "node:path";
 
 import {
@@ -17,7 +18,7 @@ const APPROVAL_TTL_MS = 10 * 60 * 1000;
 const NO_FOLLOW = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
 const NON_BLOCK = typeof constants.O_NONBLOCK === "number" ? constants.O_NONBLOCK : 0;
 const READ_FLAGS = constants.O_RDONLY | NO_FOLLOW | NON_BLOCK;
-const CLEANUP_FLAGS = constants.O_RDWR | NO_FOLLOW | NON_BLOCK;
+const MAX_OUTPUT_BYTES = 512;
 const STATE_PATHS = [
   { pathspec: ".ai-safe-driver/handover.md", label: "handover payload" },
   { pathspec: ".ai-safe-driver/armed.json", label: "armed.json approval" },
@@ -161,9 +162,10 @@ const readVerifiedHandover = async (handoverPath) => {
       openFlags: READ_FLAGS,
       openFile: open,
       lstatPath: lstat,
+      uid,
     });
   } catch (error) {
-    if (error instanceof Error && /^handover (?:is not|exceeds|is missing)/u.test(error.message)) {
+    if (error instanceof Error && /^handover (?:is not|exceeds|is missing|has)/u.test(error.message)) {
       refuse(error.message);
     }
     refuse("handover validation failed");
@@ -173,6 +175,42 @@ const readVerifiedHandover = async (handoverPath) => {
 const safeFailureLine = (reason) => {
   const ascii = reason.replace(/[\r\n]/gu, " ").replace(/[^\x20-\x7e]/gu, "?").slice(0, 400);
   return `AI Safe Driver handover refused: ${ascii}\n`;
+};
+
+const writeBounded = (stream, output) => {
+  if (Buffer.byteLength(output, "utf8") > MAX_OUTPUT_BYTES) {
+    return Promise.reject(new Error("output exceeds limit"));
+  }
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const swallowLaterErrors = () => {};
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      stream.off("error", onError);
+      if (error) {
+        stream.on("error", swallowLaterErrors);
+        reject(new Error("stream write failed", { cause: error }));
+      } else {
+        resolve();
+      }
+    };
+    const onError = (error) => finish(error);
+    stream.once("error", onError);
+    try {
+      stream.write(output, "utf8", (error) => finish(error));
+    } catch (error) {
+      finish(error);
+    }
+  });
+};
+
+const writeErrorLine = async (line) => {
+  try {
+    await writeBounded(process.stderr, line);
+  } catch {
+    // There is no further bounded channel available.
+  }
 };
 
 try {
@@ -199,7 +237,11 @@ try {
   await validateBoundary();
 
   if (options.check) {
-    process.stdout.write(`${JSON.stringify({ handover_sha256: verified.digest })}\n`);
+    try {
+      await writeBounded(process.stdout, `${JSON.stringify({ handover_sha256: verified.digest })}\n`);
+    } catch {
+      refuse("check result could not be written");
+    }
   } else {
     if (verified.digest !== options.expectedDigest) refuse("handover digest does not match checked content");
     const approval = buildApproval({
@@ -209,14 +251,22 @@ try {
       ttlMs: APPROVAL_TTL_MS,
     });
     if (approval.handover_sha256 !== verified.digest) refuse("handover digest verification failed");
+    const privatePath = path.join(
+      stateRoot,
+      `.armed-${randomBytes(16).toString("hex")}.tmp`,
+    );
     try {
       await writeExclusiveApproval({
         armedPath,
+        privatePath,
         approval,
         openFile: open,
+        linkFile: link,
+        unlinkFile: unlink,
+        lstatPath: lstat,
+        finalOpenFlags: READ_FLAGS,
         validateBoundary,
         uid,
-        cleanupOpenFlags: CLEANUP_FLAGS,
       });
     } catch (error) {
       if (error && typeof error === "object" && "code" in error && error.code === "EEXIST") {
@@ -227,11 +277,16 @@ try {
       }
       refuse("approval could not be created");
     }
-    process.stdout.write(`${JSON.stringify({
+    const result = `${JSON.stringify({
       action: approval.action,
       expires_at: approval.expires_at,
       handover_sha256: approval.handover_sha256,
-    })}\n`);
+    })}\n`;
+    try {
+      await writeBounded(process.stdout, result);
+    } catch {
+      await writeErrorLine("AI Safe Driver handover armed: result output unavailable\n");
+    }
   }
 } catch (error) {
   const reason = error instanceof Refusal
@@ -239,6 +294,6 @@ try {
     : error instanceof Error && /^(?:workspace|handover directory|handover|approval) /u.test(error.message)
       ? error.message
       : "validation failed";
-  process.stderr.write(safeFailureLine(reason));
+  await writeErrorLine(safeFailureLine(reason));
   process.exitCode = 1;
 }

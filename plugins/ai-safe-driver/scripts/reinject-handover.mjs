@@ -62,6 +62,7 @@ if (input && ALLOWED_SOURCES.has(input.source) && typeof input.cwd === "string")
         openFlags: READ_FLAGS,
         openFile: open,
         lstatPath: lstat,
+        uid,
       }),
       readBoundedRegularFile({
         filePath: armedPath,

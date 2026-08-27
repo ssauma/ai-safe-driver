@@ -6,6 +6,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
@@ -85,6 +86,27 @@ await import(${JSON.stringify(pathToFileURL(armScript).href)});`,
   { cwd, encoding: "utf8" },
 );
 
+const runArmWithBrokenStdout = (cwd, args, kind) => spawnSync(
+  process.execPath,
+  [
+    "--input-type=module",
+    "--eval",
+    `const failure = Object.assign(new Error("native secret ${cwd}\\nsecond line"), { code: "EPIPE" });
+process.stdout.write = (_payload, encoding, callback) => {
+  const done = typeof encoding === "function" ? encoding : callback;
+  if (${JSON.stringify(kind)} === "callback") {
+    if (done) done(failure); else throw failure;
+  } else {
+    queueMicrotask(() => process.stdout.emit("error", failure));
+  }
+  return false;
+};
+process.argv = [process.execPath, ${JSON.stringify(armScript)}, "--cwd", ${JSON.stringify(cwd)}, ...${JSON.stringify(args)}];
+await import(${JSON.stringify(pathToFileURL(armScript).href)});`,
+  ],
+  { cwd, encoding: "utf8" },
+);
+
 const addLocalExclude = (cwd) => {
   const exclude = execFileSync("git", ["rev-parse", "--git-path", "info/exclude"], { cwd, encoding: "utf8" }).trim();
   writeFileSync(path.resolve(cwd, exclude), ".ai-safe-driver/\n", { flag: "a" });
@@ -135,6 +157,38 @@ test("arming writes exclusive mode-0600 digest-bound approval", () => {
   assert.equal(approval.handover_sha256, createHash("sha256").update(validHandover).digest("hex"));
   assert.equal(statSync(armedPath).mode & 0o777, 0o600);
   assert.equal(Date.parse(approval.expires_at) - Date.parse(approval.created_at), 10 * 60 * 1000);
+  assert.deepEqual(
+    readdirSync(path.dirname(armedPath)).filter((name) => name.startsWith(".armed-") && name.endsWith(".tmp")),
+    [],
+  );
+});
+
+test("check stdout callback failure is bounded and leaves no approval", () => {
+  const cwd = makeNonGitWorkspace();
+  const result = runArmWithBrokenStdout(cwd, ["--check"], "callback");
+
+  assertBoundedFailure(result, cwd);
+  assert.match(result.stderr, /check result could not be written/i);
+  assert.equal(result.stderr.includes("native secret"), false);
+  assert.equal(existsSync(path.join(cwd, ".ai-safe-driver", "armed.json")), false);
+});
+
+test("action treats atomic publication as committed when stdout closes", () => {
+  const cwd = makeNonGitWorkspace();
+  const result = runArmWithBrokenStdout(
+    cwd,
+    ["--action", "compact", "--handover-sha256", validDigest()],
+    "error",
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "");
+  assert.ok(Buffer.byteLength(result.stderr, "utf8") <= 512, result.stderr);
+  assert.equal(result.stderr.trim().split("\n").length, 1, result.stderr);
+  assert.match(result.stderr, /armed.*output unavailable/i);
+  assert.equal(result.stderr.includes(cwd), false, result.stderr);
+  assert.equal(result.stderr.includes("native secret"), false, result.stderr);
+  assert.equal(existsSync(path.join(cwd, ".ai-safe-driver", "armed.json")), true);
 });
 
 test("arming refuses an existing approval without changing its bytes", () => {
@@ -388,6 +442,17 @@ test("rejects unsafe workspace and state-directory permissions on POSIX", { skip
   const stateResult = runArm(stateUnsafe, "--check");
   assertBoundedFailure(stateResult, stateUnsafe);
   assert.match(stateResult.stderr, /handover directory.*permissions/i);
+});
+
+test("check rejects a group-writable handover on POSIX", { skip: typeof process.getuid !== "function" }, () => {
+  const cwd = makeNonGitWorkspace();
+  const handoverPath = path.join(cwd, ".ai-safe-driver", "handover.md");
+  chmodSync(handoverPath, 0o620);
+
+  const result = runArm(cwd, "--check");
+
+  assertBoundedFailure(result, cwd);
+  assert.match(result.stderr, /handover has unsafe permissions/i);
 });
 
 test("rejects a stable symlinked state directory", () => {
