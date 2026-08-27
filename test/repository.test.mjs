@@ -1,6 +1,17 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -567,6 +578,7 @@ test("documents deterministic handover checking and two separate mutation approv
   const skill = read(`${skillRoot}/SKILL.md`);
   const handover = read(`${skillRoot}/references/handover.md`);
   const armSource = read(`${pluginRoot}/scripts/arm-handover.mjs`);
+  const coreSource = read(`${pluginRoot}/scripts/handover-core.mjs`);
 
   assert.match(skill, /may read the bundled handover procedure without mutation approval/i);
   assert.match(skill, /Countersteering remains discussion-only/i);
@@ -576,14 +588,16 @@ test("documents deterministic handover checking and two separate mutation approv
   assert.match(handover, /ask before writing either file/i);
   assert.match(handover, /arm-handover\.mjs"? --cwd .* --check/i);
   assert.match(handover, /ask which exact transition to arm/i);
-  assert.match(handover, /--action compact/);
-  assert.match(handover, /--action clear/);
+  assert.match(handover, /capture[d]? .*handover_sha256|capture .*SHA-256/i);
+  assert.match(handover, /--action compact[^\n]*--handover-sha256/);
+  assert.match(handover, /--action clear[^\n]*--handover-sha256/);
   assert.doesNotMatch(handover, /Write `armed\.json` as one JSON object/i);
   assert.doesNotMatch(handover, /"schema": "ai-safe-driver-handover-v1"/);
 
   assert.match(armSource, /readBoundedRegularFile|readAndValidateHandover/);
-  assert.match(armSource, /open\(armedPath, "wx", 0o600\)/);
-  assert.match(armSource, /handle\.sync\(\)/);
+  assert.match(armSource, /writeExclusiveApproval/);
+  assert.match(coreSource, /openFile\(armedPath, "wx", 0o600\)/);
+  assert.match(coreSource, /handle\.sync\(\)/);
   assert.doesNotMatch(armSource, /git[^\n]*config/i);
 
   const ignoreLines = read(".gitignore").split(/\r?\n/u);
@@ -660,11 +674,13 @@ test("ships drift detection hooks and keeps handover permission gated", () => {
 
 test("handover hook uses the bounded no-follow reader for both state files", () => {
   const source = read(`${pluginRoot}/scripts/reinject-handover.mjs`);
+  const coreSource = read(`${pluginRoot}/scripts/handover-core.mjs`);
   assert.match(source, /O_NOFOLLOW/);
   assert.match(source, /O_NONBLOCK/);
   assert.match(source, /readBoundedRegularFile/);
   assert.doesNotMatch(source, /\breadFile\(/);
-  assert.match(source, /label: "handover"/);
+  assert.match(source, /readAndValidateHandover/);
+  assert.match(coreSource, /label: "handover"/);
   assert.match(source, /label: "approval"/);
 });
 
@@ -747,6 +763,22 @@ const approvalFor = (handover, action, overrides = {}) => {
   };
 };
 
+const bindApprovalToFile = (armedPath, approval) => {
+  if (!existsSync(armedPath)) writeFileSync(armedPath, "{}\n", { mode: 0o600 });
+  chmodSync(armedPath, 0o600);
+  const stat = statSync(armedPath);
+  return typeof process.getuid === "function"
+    ? { ...approval, approval_dev: stat.dev, approval_ino: stat.ino }
+    : approval;
+};
+
+const writeApprovalSync = (armedPath, approval) => {
+  const bound = bindApprovalToFile(armedPath, approval);
+  writeFileSync(armedPath, JSON.stringify(bound), { mode: 0o600 });
+  chmodSync(armedPath, 0o600);
+  return bound;
+};
+
 const withState = (callback) => {
   const root = mkdtempSync(path.join(tmpdir(), "ai-safe-driver-"));
   const state = path.join(root, ".ai-safe-driver");
@@ -767,7 +799,7 @@ test("hook loads a matching handover once and keeps the handover", () => withSta
   const handover = validHandover("Preserve the exact JSON contract.");
   mkdirSync(state);
   writeFileSync(path.join(state, "handover.md"), handover);
-  writeFileSync(path.join(state, "armed.json"), JSON.stringify(approvalFor(handover, "compact")));
+  writeApprovalSync(path.join(state, "armed.json"), approvalFor(handover, "compact"));
 
   const first = runHook(root, "compact");
   assert.equal(first.status, 0);
@@ -787,7 +819,7 @@ test("hook keeps approval when the stdout write callback reports failure", () =>
   mkdirSync(state);
   const armed = path.join(state, "armed.json");
   writeFileSync(path.join(state, "handover.md"), handover);
-  writeFileSync(armed, JSON.stringify(approvalFor(handover, "compact")));
+  writeApprovalSync(armed, approvalFor(handover, "compact"));
 
   const result = runHookWithFailedStdout(root, "compact");
   assert.equal(result.status, 0);
@@ -801,16 +833,17 @@ test("hook accepts a four KiB approval and rejects one extra byte", () => withSt
   const armed = path.join(state, "armed.json");
   writeFileSync(path.join(state, "handover.md"), handover);
 
-  const rawApproval = JSON.stringify(approvalFor(handover, "compact"));
+  const rawApproval = JSON.stringify(bindApprovalToFile(armed, approvalFor(handover, "compact")));
   const atCap = `${rawApproval}${" ".repeat(4 * 1024 - Buffer.byteLength(rawApproval))}`;
   assert.equal(Buffer.byteLength(atCap), 4 * 1024);
   writeFileSync(armed, atCap);
   assert.notEqual(runHook(root, "compact").stdout, "");
   assert.equal(existsSync(armed), false);
 
-  const oversized = `${rawApproval}${" ".repeat(4 * 1024 + 1 - Buffer.byteLength(rawApproval))}`;
-  assert.equal(Buffer.byteLength(oversized), 4 * 1024 + 1);
-  writeFileSync(armed, oversized);
+  const oversizedApproval = JSON.stringify(bindApprovalToFile(armed, approvalFor(handover, "compact")));
+  const oversizedBound = `${oversizedApproval}${" ".repeat(4 * 1024 + 1 - Buffer.byteLength(oversizedApproval))}`;
+  assert.equal(Buffer.byteLength(oversizedBound), 4 * 1024 + 1);
+  writeFileSync(armed, oversizedBound);
   const result = runHook(root, "compact");
   assert.equal(result.stdout, "");
   assert.match(result.stderr, /approval exceeds 4 KiB/);
@@ -823,19 +856,19 @@ test("hook rejects mismatched, changed, and expired approvals without consuming 
   const armed = path.join(state, "armed.json");
   writeFileSync(path.join(state, "handover.md"), handover);
 
-  writeFileSync(armed, JSON.stringify(approvalFor(handover, "clear")));
+  writeApprovalSync(armed, approvalFor(handover, "clear"));
   assert.equal(runHook(root, "compact").stdout, "");
   assert.equal(existsSync(armed), true);
 
-  writeFileSync(armed, JSON.stringify(approvalFor("different", "compact")));
+  writeApprovalSync(armed, approvalFor("different", "compact"));
   assert.equal(runHook(root, "compact").stdout, "");
   assert.equal(existsSync(armed), true);
 
   const expiredStart = new Date(Date.now() - 20 * 60 * 1000);
-  writeFileSync(armed, JSON.stringify(approvalFor(handover, "compact", {
+  writeApprovalSync(armed, approvalFor(handover, "compact", {
     created_at: expiredStart.toISOString(),
     expires_at: new Date(expiredStart.getTime() + 10 * 60 * 1000).toISOString(),
-  })));
+  }));
   assert.equal(runHook(root, "compact").stdout, "");
   assert.equal(existsSync(armed), true);
 }));
@@ -844,7 +877,7 @@ test("hook accepts a separately approved clear transition", () => withState(({ r
   const handover = validHandover("Resume in a fresh chat.");
   mkdirSync(state);
   writeFileSync(path.join(state, "handover.md"), handover);
-  writeFileSync(path.join(state, "armed.json"), JSON.stringify(approvalFor(handover, "clear")));
+  writeApprovalSync(path.join(state, "armed.json"), approvalFor(handover, "clear"));
 
   const result = runHook(root, "clear");
   assert.equal(result.status, 0);
@@ -860,7 +893,7 @@ test("hook rejects symlinked handovers without consuming approval", () => withSt
   const handover = validHandover("Outside file must not load.");
   writeFileSync(outside, handover);
   symlinkSync(outside, handoverPath);
-  writeFileSync(armed, JSON.stringify(approvalFor(handover, "compact")));
+  writeApprovalSync(armed, approvalFor(handover, "compact"));
   assert.equal(runHook(root, "compact").stdout, "");
   assert.equal(existsSync(armed), true);
 
@@ -871,7 +904,7 @@ test("hook rejects a non-file handover before reading it", () => withState(({ ro
   const handoverPath = path.join(state, "handover.md");
   const armed = path.join(state, "armed.json");
   mkdirSync(handoverPath);
-  writeFileSync(armed, JSON.stringify(approvalFor(validHandover(), "compact")));
+  writeApprovalSync(armed, approvalFor(validHandover(), "compact"));
 
   const result = runHook(root, "compact");
   assert.equal(result.stdout, "");
@@ -887,14 +920,14 @@ test("hook accepts a valid handover below six KiB and rejects one byte over", ()
   const belowCap = `${base}${"x".repeat(6 * 1024 - 1 - Buffer.byteLength(base))}`;
   assert.equal(Buffer.byteLength(belowCap), 6 * 1024 - 1);
   writeFileSync(handoverPath, belowCap);
-  writeFileSync(armed, JSON.stringify(approvalFor(belowCap, "compact")));
+  writeApprovalSync(armed, approvalFor(belowCap, "compact"));
   assert.notEqual(runHook(root, "compact").stdout, "");
   assert.equal(existsSync(armed), false);
 
   const oversized = `${base}${"x".repeat(6 * 1024 + 1 - Buffer.byteLength(base))}`;
   assert.equal(Buffer.byteLength(oversized), 6 * 1024 + 1);
   writeFileSync(handoverPath, oversized);
-  writeFileSync(armed, JSON.stringify(approvalFor(oversized, "compact")));
+  writeApprovalSync(armed, approvalFor(oversized, "compact"));
   assert.equal(runHook(root, "compact").stdout, "");
   assert.equal(existsSync(armed), true);
 }));
@@ -904,8 +937,66 @@ test("hook rejects a structurally incomplete handover", () => withState(({ root,
   mkdirSync(state);
   const armed = path.join(state, "armed.json");
   writeFileSync(path.join(state, "handover.md"), handover);
-  writeFileSync(armed, JSON.stringify(approvalFor(handover, "compact")));
+  writeApprovalSync(armed, approvalFor(handover, "compact"));
 
   assert.equal(runHook(root, "compact").stdout, "");
+  assert.equal(existsSync(armed), true);
+}));
+
+test("hook rejects approval inode replacement after arming", { skip: typeof process.getuid !== "function" }, () => withState(({ root, state }) => {
+  const handover = validHandover();
+  mkdirSync(state, { mode: 0o700 });
+  const armed = path.join(state, "armed.json");
+  writeFileSync(path.join(state, "handover.md"), handover);
+  writeApprovalSync(armed, approvalFor(handover, "compact"));
+  const copiedApproval = readFileSync(armed);
+  unlinkSync(armed);
+  writeFileSync(armed, copiedApproval, { mode: 0o600 });
+  chmodSync(armed, 0o600);
+
+  const result = runHook(root, "compact");
+
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /approval file identity mismatch/i);
+  assert.equal(existsSync(armed), true);
+}));
+
+test("hook rejects unsafe state-directory and approval modes on POSIX", { skip: typeof process.getuid !== "function" }, () => {
+  withState(({ root, state }) => {
+    const handover = validHandover();
+    mkdirSync(state, { mode: 0o700 });
+    const armed = path.join(state, "armed.json");
+    writeFileSync(path.join(state, "handover.md"), handover);
+    writeApprovalSync(armed, approvalFor(handover, "compact"));
+    chmodSync(state, 0o777);
+    const result = runHook(root, "compact");
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /handover directory has unsafe permissions/i);
+  });
+
+  withState(({ root, state }) => {
+    const handover = validHandover();
+    mkdirSync(state, { mode: 0o700 });
+    const armed = path.join(state, "armed.json");
+    writeFileSync(path.join(state, "handover.md"), handover);
+    writeApprovalSync(armed, approvalFor(handover, "compact"));
+    chmodSync(armed, 0o644);
+    const result = runHook(root, "compact");
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /approval has unsafe permissions/i);
+  });
+});
+
+test("hook rejects malformed UTF-8 handover bytes using their exact raw digest", () => withState(({ root, state }) => {
+  mkdirSync(state, { mode: 0o700 });
+  const handover = Buffer.concat([Buffer.from(validHandover()), Buffer.from([0xc0, 0xaf])]);
+  const armed = path.join(state, "armed.json");
+  writeFileSync(path.join(state, "handover.md"), handover);
+  writeApprovalSync(armed, approvalFor(handover, "compact"));
+
+  const result = runHook(root, "compact");
+
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /handover is not valid UTF-8/i);
   assert.equal(existsSync(armed), true);
 }));

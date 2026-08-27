@@ -6,15 +6,23 @@ import { lstat, open, realpath } from "node:fs/promises";
 import path from "node:path";
 
 import {
+  assertSecureDirectoryBoundary,
   buildApproval,
+  captureSecureDirectoryBoundary,
   readAndValidateHandover,
+  writeExclusiveApproval,
 } from "./handover-core.mjs";
 
 const APPROVAL_TTL_MS = 10 * 60 * 1000;
 const NO_FOLLOW = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
 const NON_BLOCK = typeof constants.O_NONBLOCK === "number" ? constants.O_NONBLOCK : 0;
 const READ_FLAGS = constants.O_RDONLY | NO_FOLLOW | NON_BLOCK;
-const HANDOVER_PATHSPEC = ".ai-safe-driver/handover.md";
+const CLEANUP_FLAGS = constants.O_RDWR | NO_FOLLOW | NON_BLOCK;
+const STATE_PATHS = [
+  { pathspec: ".ai-safe-driver/handover.md", label: "handover payload" },
+  { pathspec: ".ai-safe-driver/armed.json", label: "armed.json approval" },
+];
+const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
 
 class Refusal extends Error {}
 
@@ -26,6 +34,7 @@ const parseArguments = (argv) => {
   let cwd;
   let check = false;
   let action;
+  let expectedDigest;
 
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -40,6 +49,12 @@ const parseArguments = (argv) => {
       if (action !== undefined || index + 1 >= argv.length) refuse("invalid --action argument");
       action = argv[index + 1];
       index += 1;
+    } else if (argument === "--handover-sha256") {
+      if (expectedDigest !== undefined || index + 1 >= argv.length) {
+        refuse("invalid --handover-sha256 argument");
+      }
+      expectedDigest = argv[index + 1];
+      index += 1;
     } else {
       refuse("unexpected argument");
     }
@@ -50,7 +65,11 @@ const parseArguments = (argv) => {
   if (action !== undefined && action !== "compact" && action !== "clear") {
     refuse("action must be compact or clear");
   }
-  return { cwd, check, action };
+  if (check && expectedDigest !== undefined) refuse("check mode does not accept a handover digest");
+  if (action !== undefined && !/^[a-f0-9]{64}$/u.test(expectedDigest ?? "")) {
+    refuse("action requires a valid handover SHA-256");
+  }
+  return { cwd, check, action, expectedDigest };
 };
 
 const resolveWorkspace = async (candidate) => {
@@ -67,13 +86,20 @@ const resolveWorkspace = async (candidate) => {
   }
 };
 
-const hasGitMarker = async (cwd) => {
-  try {
-    await lstat(path.join(cwd, ".git"));
-    return true;
-  } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return false;
-    refuse("Git workspace marker cannot be verified");
+const hasAncestorGitMarker = async (cwd) => {
+  let current = cwd;
+  while (true) {
+    try {
+      await lstat(path.join(current, ".git"));
+      return true;
+    } catch (error) {
+      if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) {
+        refuse("Git workspace marker cannot be verified");
+      }
+    }
+    const parent = path.dirname(current);
+    if (parent === current) return false;
+    current = parent;
   }
 };
 
@@ -82,6 +108,8 @@ const runGit = (cwd, args) => {
   for (const key of Object.keys(env)) {
     if (key.toUpperCase().startsWith("GIT_")) delete env[key];
   }
+  env.LC_ALL = "C";
+  env.LANG = "C";
   return spawnSync("git", args, {
     cwd,
     encoding: "utf8",
@@ -96,37 +124,34 @@ const isUnavailable = (result) => result.error
   && result.error.code === "ENOENT";
 
 const verifyGitSafety = async (cwd) => {
-  const marker = await hasGitMarker(cwd);
+  const marker = await hasAncestorGitMarker(cwd);
   const repository = runGit(cwd, ["rev-parse", "--is-inside-work-tree"]);
   if (isUnavailable(repository)) {
     if (marker) refuse("Git is unavailable for a Git workspace");
     return;
   }
-  if (repository.error) refuse("Git workspace validation failed");
+  if (repository.error || repository.signal || repository.status === null) {
+    refuse("Git workspace validation failed");
+  }
   if (repository.status !== 0 || repository.stdout.trim() !== "true") {
-    if (marker) refuse("Git workspace validation failed");
+    const expectedNonRepository = !marker
+      && repository.status === 128
+      && /not a git repository/iu.test(repository.stderr);
+    if (!expectedNonRepository) refuse("Git workspace validation failed");
     return;
   }
 
-  const tracked = runGit(cwd, ["ls-files", "--error-unmatch", HANDOVER_PATHSPEC]);
-  const ignored = runGit(cwd, ["check-ignore", "-q", HANDOVER_PATHSPEC]);
-  if (isUnavailable(tracked) || isUnavailable(ignored)) refuse("Git is unavailable for a Git workspace");
-  if (tracked.error || ignored.error) refuse("Git workspace validation failed");
-  if (tracked.status === 0) refuse("handover payload is tracked by Git");
-  if (tracked.status !== 1) refuse("Git tracked-file check failed");
-  if (ignored.status !== 0) refuse("handover payload is not git-ignored");
-};
-
-const validateStateDirectory = async (cwd) => {
-  const stateRoot = path.join(cwd, ".ai-safe-driver");
-  try {
-    const stateStat = await lstat(stateRoot);
-    if (!stateStat.isDirectory() || stateStat.isSymbolicLink()) refuse("handover directory is not a regular directory");
-  } catch (error) {
-    if (error instanceof Refusal) throw error;
-    refuse("handover directory is unavailable");
+  for (const { pathspec, label } of STATE_PATHS) {
+    const tracked = runGit(cwd, ["ls-files", "--error-unmatch", pathspec]);
+    const ignored = runGit(cwd, ["check-ignore", "-q", pathspec]);
+    if (isUnavailable(tracked) || isUnavailable(ignored)) refuse("Git is unavailable for a Git workspace");
+    if (tracked.error || ignored.error || tracked.signal || ignored.signal) {
+      refuse("Git workspace validation failed");
+    }
+    if (tracked.status === 0) refuse(`${label} is tracked by Git`);
+    if (tracked.status !== 1) refuse("Git tracked-file check failed");
+    if (ignored.status !== 0) refuse(`${label} is not git-ignored`);
   }
-  return stateRoot;
 };
 
 const readVerifiedHandover = async (handoverPath) => {
@@ -145,28 +170,6 @@ const readVerifiedHandover = async (handoverPath) => {
   }
 };
 
-const writeApproval = async ({ armedPath, approval }) => {
-  let handle;
-  try {
-    handle = await open(armedPath, "wx", 0o600);
-  } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "EEXIST") {
-      refuse("approval already exists");
-    }
-    refuse("approval could not be created");
-  }
-
-  try {
-    await handle.chmod(0o600);
-    await handle.writeFile(`${JSON.stringify(approval)}\n`, "utf8");
-    await handle.sync();
-  } catch {
-    refuse("approval could not be persisted");
-  } finally {
-    await handle.close();
-  }
-};
-
 const safeFailureLine = (reason) => {
   const ascii = reason.replace(/[\r\n]/gu, " ").replace(/[^\x20-\x7e]/gu, "?").slice(0, 400);
   return `AI Safe Driver handover refused: ${ascii}\n`;
@@ -176,22 +179,54 @@ try {
   const options = parseArguments(process.argv.slice(2));
   const cwd = await resolveWorkspace(options.cwd);
   await verifyGitSafety(cwd);
-  const stateRoot = await validateStateDirectory(cwd);
+  const stateRoot = path.join(cwd, ".ai-safe-driver");
+  const directoryBoundary = await captureSecureDirectoryBoundary({
+    workspacePath: cwd,
+    statePath: stateRoot,
+    lstatPath: lstat,
+    uid,
+  });
+  const validateBoundary = () => assertSecureDirectoryBoundary({
+    boundary: directoryBoundary,
+    workspacePath: cwd,
+    statePath: stateRoot,
+    lstatPath: lstat,
+    uid,
+  });
   const handoverPath = path.join(stateRoot, "handover.md");
   const armedPath = path.join(stateRoot, "armed.json");
   const verified = await readVerifiedHandover(handoverPath);
+  await validateBoundary();
 
   if (options.check) {
     process.stdout.write(`${JSON.stringify({ handover_sha256: verified.digest })}\n`);
   } else {
+    if (verified.digest !== options.expectedDigest) refuse("handover digest does not match checked content");
     const approval = buildApproval({
       action: options.action,
-      handover: verified.content,
+      handoverBytes: verified.bytes,
       now: Date.now(),
       ttlMs: APPROVAL_TTL_MS,
     });
     if (approval.handover_sha256 !== verified.digest) refuse("handover digest verification failed");
-    await writeApproval({ armedPath, approval });
+    try {
+      await writeExclusiveApproval({
+        armedPath,
+        approval,
+        openFile: open,
+        validateBoundary,
+        uid,
+        cleanupOpenFlags: CLEANUP_FLAGS,
+      });
+    } catch (error) {
+      if (error && typeof error === "object" && "code" in error && error.code === "EEXIST") {
+        refuse("approval already exists");
+      }
+      if (error instanceof Error && error.message === "approval could not be persisted") {
+        refuse(error.message);
+      }
+      refuse("approval could not be created");
+    }
     process.stdout.write(`${JSON.stringify({
       action: approval.action,
       expires_at: approval.expires_at,
@@ -199,7 +234,11 @@ try {
     })}\n`);
   }
 } catch (error) {
-  const reason = error instanceof Refusal ? error.message : "validation failed";
+  const reason = error instanceof Refusal
+    ? error.message
+    : error instanceof Error && /^(?:workspace|handover directory|handover|approval) /u.test(error.message)
+      ? error.message
+      : "validation failed";
   process.stderr.write(safeFailureLine(reason));
   process.exitCode = 1;
 }

@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
+  renameSync,
   statSync,
   symlinkSync,
   unlinkSync,
@@ -43,11 +45,19 @@ Stop after the same failure.
 ## Transition rationale
 Compact with continuity.
 `;
+const validDigest = () => createHash("sha256").update(Buffer.from(validHandover)).digest("hex");
 
 const makeWorkspace = () => {
   const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "asd-arm-")));
   execFileSync("git", ["init", "-q"], { cwd });
   mkdirSync(path.join(cwd, ".ai-safe-driver"));
+  writeFileSync(path.join(cwd, ".ai-safe-driver", "handover.md"), validHandover);
+  return cwd;
+};
+
+const makeNonGitWorkspace = () => {
+  const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "asd-arm-nongit-")));
+  mkdirSync(path.join(cwd, ".ai-safe-driver"), { mode: 0o700 });
   writeFileSync(path.join(cwd, ".ai-safe-driver", "handover.md"), validHandover);
   return cwd;
 };
@@ -69,7 +79,7 @@ const runArmWithUmask = (cwd, action, mask) => spawnSync(
     "--input-type=module",
     "--eval",
     `process.umask(${mask});
-process.argv = [process.execPath, ${JSON.stringify(armScript)}, "--cwd", ${JSON.stringify(cwd)}, "--action", ${JSON.stringify(action)}];
+process.argv = [process.execPath, ${JSON.stringify(armScript)}, "--cwd", ${JSON.stringify(cwd)}, "--action", ${JSON.stringify(action)}, "--handover-sha256", ${JSON.stringify(validDigest())}];
 await import(${JSON.stringify(pathToFileURL(armScript).href)});`,
   ],
   { cwd, encoding: "utf8" },
@@ -79,6 +89,14 @@ const addLocalExclude = (cwd) => {
   const exclude = execFileSync("git", ["rev-parse", "--git-path", "info/exclude"], { cwd, encoding: "utf8" }).trim();
   writeFileSync(path.resolve(cwd, exclude), ".ai-safe-driver/\n", { flag: "a" });
 };
+
+const runAction = (cwd, action, digest = validDigest()) => runArm(
+  cwd,
+  "--action",
+  action,
+  "--handover-sha256",
+  digest,
+);
 
 const assertBoundedFailure = (result, cwd) => {
   assert.equal(result.status, 1);
@@ -108,7 +126,7 @@ test("check accepts a local info/exclude entry", () => {
 test("arming writes exclusive mode-0600 digest-bound approval", () => {
   const cwd = makeWorkspace();
   addLocalExclude(cwd);
-  const result = runArm(cwd, "--action", "compact");
+  const result = runAction(cwd, "compact");
   assert.equal(result.status, 0, result.stderr);
   const armedPath = path.join(cwd, ".ai-safe-driver", "armed.json");
   const approval = JSON.parse(readFileSync(armedPath, "utf8"));
@@ -122,10 +140,10 @@ test("arming writes exclusive mode-0600 digest-bound approval", () => {
 test("arming refuses an existing approval without changing its bytes", () => {
   const cwd = makeWorkspace();
   addLocalExclude(cwd);
-  assert.equal(runArm(cwd, "--action", "compact").status, 0);
+  assert.equal(runAction(cwd, "compact").status, 0);
   const armedPath = path.join(cwd, ".ai-safe-driver", "armed.json");
   const before = readFileSync(armedPath);
-  const result = runArm(cwd, "--action", "clear");
+  const result = runAction(cwd, "clear");
   assert.equal(result.status, 1);
   assert.match(result.stderr, /already exists/i);
   assert.deepEqual(readFileSync(armedPath), before);
@@ -167,9 +185,41 @@ test("requires an absolute cwd and exactly one mode", () => {
     ["--action", "archive"],
     ["--check", "--action", "compact"],
     ["--action", "compact", "--unexpected"],
+    ["--cwd", cwd, "--check"],
+    ["--check", "--check"],
+    ["--action", "compact", "--action", "clear"],
+    ["--action"],
+    ["--action", "compact"],
+    ["--action", "compact", "--handover-sha256"],
+    ["--action", "compact", "--handover-sha256", "not-a-digest"],
+    ["--action", "compact", "--handover-sha256", validDigest(), "--handover-sha256", validDigest()],
+    ["--check", "--handover-sha256", validDigest()],
   ]) {
     assertBoundedFailure(runArm(cwd, ...args), cwd);
   }
+
+  for (const rawArgs of [["--cwd"], ["--check"], ["--cwd", cwd]]) {
+    const result = spawnSync(process.execPath, [armScript, ...rawArgs], { cwd, encoding: "utf8" });
+    assertBoundedFailure(result, cwd);
+  }
+});
+
+test("action is bound to the exact digest returned by check", () => {
+  const cwd = makeWorkspace();
+  addLocalExclude(cwd);
+  const checked = runArm(cwd, "--check");
+  assert.equal(checked.status, 0, checked.stderr);
+  const digest = JSON.parse(checked.stdout).handover_sha256;
+  writeFileSync(
+    path.join(cwd, ".ai-safe-driver", "handover.md"),
+    validHandover.replace("Preserve the current goal.", "A different valid goal."),
+  );
+
+  const result = runAction(cwd, "compact", digest);
+
+  assertBoundedFailure(result, cwd);
+  assert.match(result.stderr, /digest.*match|does not match/i);
+  assert.equal(existsSync(path.join(cwd, ".ai-safe-driver", "armed.json")), false);
 });
 
 test("rejects a symlinked or otherwise noncanonical cwd instead of retargeting approval", () => {
@@ -206,6 +256,68 @@ test("a Git marker fails closed when Git is unavailable", () => {
   assert.match(result.stderr, /git.*unavailable/i);
 });
 
+test("nested paths in an ancestor repository fail closed when Git is unavailable", () => {
+  const repository = makeWorkspace();
+  addLocalExclude(repository);
+  const cwd = path.join(repository, "nested", "workspace");
+  mkdirSync(path.join(cwd, ".ai-safe-driver"), { recursive: true, mode: 0o700 });
+  writeFileSync(path.join(cwd, ".ai-safe-driver", "handover.md"), validHandover);
+
+  const result = runArmWith(cwd, ["--check"], { env: { ...process.env, PATH: "" } });
+
+  assertBoundedFailure(result, cwd);
+  assert.match(result.stderr, /git.*unavailable/i);
+});
+
+test("genuine non-Git workspaces remain usable with or without Git", () => {
+  const cwd = makeNonGitWorkspace();
+  const withGit = runArm(cwd, "--check");
+  assert.equal(withGit.status, 0, withGit.stderr);
+  const withoutGit = runArmWith(cwd, ["--check"], { env: { ...process.env, PATH: "" } });
+  assert.equal(withoutGit.status, 0, withoutGit.stderr);
+});
+
+test("unexpected Git command failures do not masquerade as a non-Git workspace", () => {
+  const cwd = makeNonGitWorkspace();
+  const bin = realpathSync(mkdtempSync(path.join(tmpdir(), "asd-arm-fake-git-")));
+  const fakeGit = path.join(bin, "git");
+  writeFileSync(fakeGit, "#!/bin/sh\nexit 2\n");
+  chmodSync(fakeGit, 0o700);
+
+  const result = runArmWith(cwd, ["--check"], {
+    env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
+  });
+
+  assertBoundedFailure(result, cwd);
+  assert.match(result.stderr, /Git workspace validation failed/i);
+});
+
+test("recognizes a repository whose root uses a .git file", () => {
+  const cwd = makeWorkspace();
+  const gitData = path.join(cwd, "git-data");
+  renameSync(path.join(cwd, ".git"), gitData);
+  writeFileSync(path.join(cwd, ".git"), `gitdir: ${gitData}\n`);
+  addLocalExclude(cwd);
+
+  const result = runArm(cwd, "--check");
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("recognizes a nested repository independently of its parent", () => {
+  const parent = makeWorkspace();
+  const cwd = path.join(parent, "nested-repository");
+  mkdirSync(cwd);
+  execFileSync("git", ["init", "-q"], { cwd });
+  mkdirSync(path.join(cwd, ".ai-safe-driver"), { mode: 0o700 });
+  writeFileSync(path.join(cwd, ".ai-safe-driver", "handover.md"), validHandover);
+  addLocalExclude(cwd);
+
+  const result = runArm(cwd, "--check");
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test("ignores inherited Git repository overrides when checking the selected workspace", () => {
   const cwd = makeWorkspace();
   const alternate = realpathSync(mkdtempSync(path.join(tmpdir(), "asd-arm-git-env-")));
@@ -237,6 +349,75 @@ test("arming enforces mode 0600 even under a restrictive umask", () => {
 
   assert.equal(result.status, 0, result.stderr);
   assert.equal(statSync(path.join(cwd, ".ai-safe-driver", "armed.json")).mode & 0o777, 0o600);
+});
+
+test("Git safety requires both handover and approval paths to be ignored", () => {
+  const cwd = makeWorkspace();
+  const exclude = execFileSync("git", ["rev-parse", "--git-path", "info/exclude"], { cwd, encoding: "utf8" }).trim();
+  writeFileSync(path.resolve(cwd, exclude), ".ai-safe-driver/handover.md\n", { flag: "a" });
+
+  const result = runArm(cwd, "--check");
+
+  assertBoundedFailure(result, cwd);
+  assert.match(result.stderr, /armed\.json.*not git-ignored|approval.*not git-ignored/i);
+});
+
+test("Git safety rejects a previously tracked absent approval path", () => {
+  const cwd = makeWorkspace();
+  addLocalExclude(cwd);
+  const armedPath = path.join(cwd, ".ai-safe-driver", "armed.json");
+  writeFileSync(armedPath, "{}\n");
+  execFileSync("git", ["add", "-f", ".ai-safe-driver/armed.json"], { cwd });
+  unlinkSync(armedPath);
+
+  const result = runArm(cwd, "--check");
+
+  assertBoundedFailure(result, cwd);
+  assert.match(result.stderr, /armed\.json.*tracked|approval.*tracked/i);
+});
+
+test("rejects unsafe workspace and state-directory permissions on POSIX", { skip: typeof process.getuid !== "function" }, () => {
+  const workspaceUnsafe = makeNonGitWorkspace();
+  chmodSync(workspaceUnsafe, 0o777);
+  const workspaceResult = runArm(workspaceUnsafe, "--check");
+  assertBoundedFailure(workspaceResult, workspaceUnsafe);
+  assert.match(workspaceResult.stderr, /workspace.*permissions/i);
+
+  const stateUnsafe = makeNonGitWorkspace();
+  chmodSync(path.join(stateUnsafe, ".ai-safe-driver"), 0o777);
+  const stateResult = runArm(stateUnsafe, "--check");
+  assertBoundedFailure(stateResult, stateUnsafe);
+  assert.match(stateResult.stderr, /handover directory.*permissions/i);
+});
+
+test("rejects a stable symlinked state directory", () => {
+  const cwd = makeNonGitWorkspace();
+  const state = path.join(cwd, ".ai-safe-driver");
+  const realState = path.join(cwd, "state-target");
+  renameSync(state, realState);
+  symlinkSync(realState, state, "dir");
+
+  const result = runArm(cwd, "--check");
+
+  assertBoundedFailure(result, cwd);
+  assert.match(result.stderr, /handover directory.*regular directory/i);
+});
+
+test("check hashes exact valid UTF-8 bytes and rejects malformed UTF-8", () => {
+  const cwd = makeNonGitWorkspace();
+  const handoverPath = path.join(cwd, ".ai-safe-driver", "handover.md");
+  const raw = Buffer.concat([Buffer.from(validHandover), Buffer.from("검증된 바이트\n")]);
+  writeFileSync(handoverPath, raw);
+  const checked = runArm(cwd, "--check");
+  assert.equal(checked.status, 0, checked.stderr);
+  assert.equal(JSON.parse(checked.stdout).handover_sha256, createHash("sha256").update(raw).digest("hex"));
+
+  for (const malformed of [Buffer.from([0xc0, 0xaf]), Buffer.from([0xe0, 0x80, 0xaf])]) {
+    writeFileSync(handoverPath, Buffer.concat([Buffer.from(validHandover), malformed]));
+    const result = runArm(cwd, "--check");
+    assertBoundedFailure(result, cwd);
+    assert.match(result.stderr, /valid UTF-8/i);
+  }
 });
 
 test("check uses the shared regular-file and heading validation without writing", () => {

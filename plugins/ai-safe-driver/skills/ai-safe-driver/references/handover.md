@@ -42,18 +42,18 @@ After the approved writes, validate without changing files. Substitute the exact
 node "${CLAUDE_PLUGIN_ROOT}/scripts/arm-handover.mjs" --cwd "<absolute-workspace>" --check
 ```
 
-The check requires a regular non-symlink handover no larger than 6 KiB, every canonical heading, and an untracked Git-ignored payload in Git worktrees. It prints the verified SHA-256 digest and does not create `armed.json`. If it refuses validation, do not arm a transition.
+The check requires a regular non-symlink handover no larger than 6 KiB, strict UTF-8, every canonical heading, and both state paths to be untracked and Git-ignored in Git worktrees. It prints the exact raw-byte SHA-256 as `handover_sha256` and does not create `armed.json`. Capture the `handover_sha256` value with the approved preview. If the check refuses validation, do not arm a transition.
 
 ## Exact action arming and transition
 
 After a successful check, explain both transition consequences and ask which exact transition to arm. Only after the user approves one exact action, run one of:
 
 ```sh
-node "${CLAUDE_PLUGIN_ROOT}/scripts/arm-handover.mjs" --cwd "<absolute-workspace>" --action compact
-node "${CLAUDE_PLUGIN_ROOT}/scripts/arm-handover.mjs" --cwd "<absolute-workspace>" --action clear
+node "${CLAUDE_PLUGIN_ROOT}/scripts/arm-handover.mjs" --cwd "<absolute-workspace>" --action compact --handover-sha256 "<digest from --check>"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/arm-handover.mjs" --cwd "<absolute-workspace>" --action clear --handover-sha256 "<digest from --check>"
 ```
 
-The helper repeats the same validation, creates `.ai-safe-driver/armed.json` exclusively with mode `0600` and schema `ai-safe-driver-handover-v1`, binds the approval to the verified handover digest, and expires it after 10 minutes. It never overwrites an existing approval. The bundled `SessionStart` hook loads the handover only when the action matches the actual transition, approval is unexpired, and the digest still matches. The hook never writes the handover and never initiates `/compact` or `/clear`.
+The helper repeats the same validation and refuses if the raw-byte digest differs from the captured check digest. On POSIX it also requires the workspace and `.ai-safe-driver` directory to belong to the invoking uid, forbids group/other writes, and verifies stable directory identity across arming. It creates `.ai-safe-driver/armed.json` exclusively with mode `0600` and schema `ai-safe-driver-handover-v1`, binds the approval to the exact verified bytes and created-file identity, and expires it after 10 minutes. It never overwrites an existing approval, and a reported persistence failure removes or invalidates only the file inode created by that invocation. These uid/mode guarantees are POSIX-only; the helper does not claim that Windows exposes equivalent semantics. The bundled `SessionStart` hook rechecks compatible directory, approval-owner, approval-mode, file-identity, action, expiry, and raw-byte digest conditions before loading. The hook never writes the handover and never initiates `/compact` or `/clear`.
 
 The hook emits the complete host JSON payload before it consumes `armed.json`, and it keeps `handover.md` for review. A failed stdout emission leaves the approval available for a later host invocation. Successful stdout emission means only that the hook finished writing to its host output stream: it does not acknowledge host or model receipt, and it does not guarantee exactly-once delivery.
 

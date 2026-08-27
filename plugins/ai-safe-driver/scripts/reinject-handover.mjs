@@ -6,17 +6,21 @@ import path from "node:path";
 
 import {
   MAX_APPROVAL_BYTES,
-  MAX_HANDOVER_BYTES,
+  assertSecureDirectoryBoundary,
+  captureSecureDirectoryBoundary,
   deliverThenConsume,
+  readAndValidateHandover,
   readBoundedRegularFile,
+  unlinkSameFile,
   validateApproval,
-  validateHandoverDocument,
+  validateApprovalFileStat,
 } from "./handover-core.mjs";
 
 const ALLOWED_SOURCES = new Set(["compact", "clear"]);
 const NO_FOLLOW = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
 const NON_BLOCK = typeof constants.O_NONBLOCK === "number" ? constants.O_NONBLOCK : 0;
 const READ_FLAGS = constants.O_RDONLY | NO_FOLLOW | NON_BLOCK;
+const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
 
 const failClosed = (message) => {
   process.stderr.write(`AI Safe Driver handover skipped: ${message}\n`);
@@ -39,11 +43,22 @@ if (input && ALLOWED_SOURCES.has(input.source) && typeof input.cwd === "string")
   const armedPath = path.join(stateRoot, "armed.json");
 
   try {
+    const directoryBoundary = await captureSecureDirectoryBoundary({
+      workspacePath: path.resolve(input.cwd),
+      statePath: stateRoot,
+      lstatPath: lstat,
+      uid,
+    });
+    const validateBoundary = () => assertSecureDirectoryBoundary({
+      boundary: directoryBoundary,
+      workspacePath: path.resolve(input.cwd),
+      statePath: stateRoot,
+      lstatPath: lstat,
+      uid,
+    });
     const [handoverFile, approvalFile] = await Promise.all([
-      readBoundedRegularFile({
+      readAndValidateHandover({
         filePath: handoverPath,
-        label: "handover",
-        maxBytes: MAX_HANDOVER_BYTES,
         openFlags: READ_FLAGS,
         openFile: open,
         lstatPath: lstat,
@@ -57,11 +72,12 @@ if (input && ALLOWED_SOURCES.has(input.source) && typeof input.cwd === "string")
         lstatPath: lstat,
       }),
     ]);
-    const handover = handoverFile.bytes.toString("utf8");
+    await validateBoundary();
+    const handover = handoverFile.content;
     const rawApproval = approvalFile.bytes.toString("utf8");
     const approval = JSON.parse(rawApproval);
-    const { digest } = validateHandoverDocument({ content: handover, stat: handoverFile.stat });
-    validateApproval({ approval, source: input.source, digest, now: Date.now() });
+    validateApprovalFileStat({ approval, stat: approvalFile.stat, uid });
+    validateApproval({ approval, source: input.source, digest: handoverFile.digest, now: Date.now() });
 
     const additionalContext = [
       "AI Safe Driver loaded the following user-approved continuity handover.",
@@ -101,7 +117,15 @@ if (input && ALLOWED_SOURCES.has(input.source) && typeof input.cwd === "string")
     await deliverThenConsume({
       payload,
       emit,
-      consume: () => unlink(armedPath),
+      consume: async () => {
+        await validateBoundary();
+        await unlinkSameFile({
+          filePath: armedPath,
+          identity: approvalFile.stat,
+          lstatPath: lstat,
+          unlinkPath: unlink,
+        });
+      },
     });
   } catch (error) {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
