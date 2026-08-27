@@ -762,6 +762,35 @@ const runHookWithFailedStdout = (cwd, source, message = "broken pipe") => spawnS
   },
 );
 
+const runHookWithApprovalReplacement = (cwd, source, armedPath, replacementApproval) => spawnSync(
+  process.execPath,
+  [
+    "--input-type=module",
+    "--eval",
+    `import { chmodSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+    const originalWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (payload, encoding, callback) => {
+      unlinkSync(${JSON.stringify(armedPath)});
+      writeFileSync(${JSON.stringify(armedPath)}, "{}\\n", { mode: 0o600 });
+      const stat = statSync(${JSON.stringify(armedPath)});
+      const replacement = {
+        ...${JSON.stringify(replacementApproval)},
+        approval_dev: stat.dev,
+        approval_ino: stat.ino,
+      };
+      writeFileSync(${JSON.stringify(armedPath)}, JSON.stringify(replacement), { mode: 0o600 });
+      chmodSync(${JSON.stringify(armedPath)}, 0o600);
+      return originalWrite(payload, encoding, callback);
+    };
+    await import(${JSON.stringify(pathToFileURL(hookScript).href)});`,
+  ],
+  {
+    cwd,
+    encoding: "utf8",
+    input: JSON.stringify({ source, cwd, hook_event_name: "SessionStart" }),
+  },
+);
+
 const HOOK_FAILURE_NOTICE = "AI Safe Driver handover skipped: operation-failed\n";
 const assertBoundedHookFailure = (result, forbidden = []) => {
   assert.equal(result.status, 0);
@@ -813,6 +842,18 @@ test("hook is dormant without an explicit approval record", () => withState(({ r
   const result = runHook(root, "compact");
   assert.equal(result.status, 0);
   assert.equal(result.stdout, "");
+  assert.equal(result.stderr, "");
+}));
+
+test("hook reports a missing handover when an approval exists and preserves that approval", () => withState(({ root, state }) => {
+  mkdirSync(state);
+  const armed = path.join(state, "armed.json");
+  writeApprovalSync(armed, approvalFor(validHandover(), "compact"));
+
+  const result = runHook(root, "compact");
+
+  assertBoundedHookFailure(result, [armed, path.join(state, "handover.md")]);
+  assert.equal(existsSync(armed), true);
 }));
 
 test("hook loads a matching handover once and keeps the handover", () => withState(({ root, state }) => {
@@ -846,6 +887,26 @@ test("hook keeps approval and emits a fixed bounded notice when stdout reports h
   const result = runHookWithFailedStdout(root, "compact", hostileMessage);
   assertBoundedHookFailure(result, [sentinelPath, "second line", "검증", "xxx"]);
   assert.equal(existsSync(armed), true);
+}));
+
+test("hook fails open and never consumes a replacement approval raced in before consumption", () => withState(({ root, state }) => {
+  const handover = validHandover();
+  mkdirSync(state);
+  const armed = path.join(state, "armed.json");
+  writeFileSync(path.join(state, "handover.md"), handover);
+  writeApprovalSync(armed, approvalFor(handover, "compact"));
+  const replacementApproval = approvalFor(handover, "clear");
+
+  const result = runHookWithApprovalReplacement(root, "compact", armed, replacementApproval);
+
+  assert.equal(result.status, 0);
+  assert.notEqual(result.stdout, "");
+  assert.equal(result.stderr, HOOK_FAILURE_NOTICE);
+  const preserved = JSON.parse(readFileSync(armed, "utf8"));
+  assert.equal(preserved.action, "clear");
+  const preservedStat = statSync(armed);
+  assert.equal(preserved.approval_dev, preservedStat.dev);
+  assert.equal(preserved.approval_ino, preservedStat.ino);
 }));
 
 test("hook accepts a four KiB approval and rejects one extra byte", () => withState(({ root, state }) => {

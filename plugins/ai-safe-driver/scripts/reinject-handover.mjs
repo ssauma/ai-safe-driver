@@ -27,6 +27,19 @@ const reportSkipped = (code) => {
   process.stderr.write(`AI Safe Driver handover skipped: ${code}\n`);
   process.exitCode = 0;
 };
+const isMissing = (error) => error
+  && typeof error === "object"
+  && "code" in error
+  && error.code === "ENOENT";
+const approvalIsPresent = async (armedPath) => {
+  try {
+    await lstat(armedPath);
+    return true;
+  } catch (error) {
+    if (isMissing(error)) return false;
+    throw error;
+  }
+};
 
 let input;
 try {
@@ -44,88 +57,85 @@ if (input && ALLOWED_SOURCES.has(input.source) && typeof input.cwd === "string")
   const armedPath = path.join(stateRoot, "armed.json");
 
   try {
-    const directoryBoundary = await captureSecureDirectoryBoundary({
-      workspacePath: path.resolve(input.cwd),
-      statePath: stateRoot,
-      lstatPath: lstat,
-      uid,
-    });
-    const validateBoundary = () => assertSecureDirectoryBoundary({
-      boundary: directoryBoundary,
-      workspacePath: path.resolve(input.cwd),
-      statePath: stateRoot,
-      lstatPath: lstat,
-      uid,
-    });
-    const [handoverFile, approvalFile] = await Promise.all([
-      readAndValidateHandover({
-        filePath: handoverPath,
-        openFlags: READ_FLAGS,
-        openFile: open,
+    const approvalPresent = await approvalIsPresent(armedPath);
+    if (approvalPresent) {
+      const directoryBoundary = await captureSecureDirectoryBoundary({
+        workspacePath: path.resolve(input.cwd),
+        statePath: stateRoot,
         lstatPath: lstat,
         uid,
-      }),
-      readBoundedRegularFile({
+      });
+      const validateBoundary = () => assertSecureDirectoryBoundary({
+        boundary: directoryBoundary,
+        workspacePath: path.resolve(input.cwd),
+        statePath: stateRoot,
+        lstatPath: lstat,
+        uid,
+      });
+      const approvalFile = await readBoundedRegularFile({
         filePath: armedPath,
         label: "approval",
         maxBytes: MAX_APPROVAL_BYTES,
         openFlags: READ_FLAGS,
         openFile: open,
         lstatPath: lstat,
-      }),
-    ]);
-    await validateBoundary();
-    const handover = handoverFile.content;
-    const rawApproval = approvalFile.bytes.toString("utf8");
-    const approval = JSON.parse(rawApproval);
-    validateApprovalFileStat({ approval, stat: approvalFile.stat, uid });
-    validateApproval({ approval, source: input.source, digest: handoverFile.digest, now: Date.now() });
+      });
+      const handoverFile = await readAndValidateHandover({
+        filePath: handoverPath,
+        openFlags: READ_FLAGS,
+        openFile: open,
+        lstatPath: lstat,
+        uid,
+      });
+      await validateBoundary();
+      const handover = handoverFile.content;
+      const rawApproval = approvalFile.bytes.toString("utf8");
+      const approval = JSON.parse(rawApproval);
+      validateApprovalFileStat({ approval, stat: approvalFile.stat, uid });
+      validateApproval({ approval, source: input.source, digest: handoverFile.digest, now: Date.now() });
 
-    const additionalContext = buildHandoverContext(handover);
+      const additionalContext = buildHandoverContext(handover);
 
-    const payload = JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: "SessionStart",
-        additionalContext,
-      },
-    });
-    const emit = (output) => new Promise((resolve, reject) => {
-      let failed = false;
-      const onError = (error) => {
-        failed = true;
-        reject(error);
-      };
-      process.stdout.once("error", onError);
-      process.stdout.write(output, "utf8", (error) => {
-        if (error) {
+      const payload = JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "SessionStart",
+          additionalContext,
+        },
+      });
+      const emit = (output) => new Promise((resolve, reject) => {
+        let failed = false;
+        const onError = (error) => {
           failed = true;
           reject(error);
-          return;
-        }
-        if (failed) return;
-        process.stdout.off("error", onError);
-        resolve();
-      });
-    });
-
-    await deliverThenConsume({
-      payload,
-      emit,
-      consume: async () => {
-        await validateBoundary();
-        await unlinkSameFile({
-          filePath: armedPath,
-          identity: approvalFile.stat,
-          lstatPath: lstat,
-          unlinkPath: unlink,
+        };
+        process.stdout.once("error", onError);
+        process.stdout.write(output, "utf8", (error) => {
+          if (error) {
+            failed = true;
+            reject(error);
+            return;
+          }
+          if (failed) return;
+          process.stdout.off("error", onError);
+          resolve();
         });
-      },
-    });
-  } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
-      // No armed handover is the normal, dormant state.
-    } else {
-      reportSkipped("operation-failed");
+      });
+
+      await deliverThenConsume({
+        payload,
+        emit,
+        consume: async () => {
+          await validateBoundary();
+          await unlinkSameFile({
+            filePath: armedPath,
+            identity: approvalFile.stat,
+            lstatPath: lstat,
+            unlinkPath: unlink,
+          });
+        },
+      });
     }
+  } catch (error) {
+    reportSkipped("operation-failed");
   }
 }
