@@ -49,7 +49,7 @@ A yes authorizes that recovery discussion only. It does not authorize a retry, f
 Accepting countersteering starts recovery discussion; it does not complete recovery. After the user accepts, choose exactly one session path and make its next gate explicit:
 
 - **Continue:** name one bounded correction, its mechanical verification, and its success or stop condition. Perform only actions already authorized. Do not call the repair complete until the correction is verified.
-- **Transition:** read the handover procedure, show the proposed handover path and preview, and request its first approval gate. Do not promise that compaction or a fresh session has happened; the plugin cannot initiate either transition.
+- **Transition:** read the handover procedure, show the proposed handover path and preview, and request its first approval gate. Before requesting approval, explicitly state that neither compaction nor a fresh-session transition has started. The plugin cannot initiate either transition.
 
 When visible evidence shows that multiple failure classes recurred and a recent compaction omitted confirmed external state, recommend a fresh session with a permission-gated handover instead of another compaction. Do not say or imply that countersteering is complete until either a verified correction has recovered the current session or the handover has been loaded after the separately approved transition.
 
