@@ -251,7 +251,7 @@ test("requires accepted countersteering to reach a verified outcome", () => {
     /choose exactly one session path/i,
     /continue[\s\S]{0,220}bounded correction[\s\S]{0,220}(?:success|stop) condition[\s\S]{0,220}verif/i,
     /transition[\s\S]{0,220}handover procedure[\s\S]{0,220}first approval gate/i,
-    /transition[\s\S]{0,360}explicitly state[\s\S]{0,180}neither compaction nor (?:a )?fresh-session transition has started/i,
+    /transition[\s\S]{0,400}before requesting (?:the first )?approval[\s\S]{0,80}explicitly state[\s\S]{0,180}neither compaction nor (?:a )?fresh-session transition has started/i,
     /do not (?:say|claim)[\s\S]{0,100}countersteering (?:is )?complete[\s\S]{0,220}(?:verified correction|handover has been loaded)/i,
     /multiple failure classes[\s\S]{0,220}compaction[\s\S]{0,220}confirmed (?:external )?state[\s\S]{0,220}fresh session/i,
   ], `${skillRoot}/references/recovery.md`);
