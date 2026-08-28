@@ -242,6 +242,21 @@ test("keeps the skill as a small router and loads details only when needed", () 
   assert.match(handover, /The hook never writes the handover and never initiates/i);
 });
 
+test("requires accepted countersteering to reach a verified outcome", () => {
+  const recovery = read(`${skillRoot}/references/recovery.md`);
+
+  assertMatchesAll(recovery, [
+    /^## Countersteering outcome gate$/m,
+    /accepting countersteering starts recovery discussion; it does not complete recovery/i,
+    /choose exactly one session path/i,
+    /continue[\s\S]{0,220}bounded correction[\s\S]{0,220}(?:success|stop) condition[\s\S]{0,220}verif/i,
+    /transition[\s\S]{0,220}handover procedure[\s\S]{0,220}first approval gate/i,
+    /transition[\s\S]{0,400}before requesting (?:the first )?approval[\s\S]{0,80}explicitly state[\s\S]{0,180}neither compaction nor (?:a )?fresh-session transition has started/i,
+    /do not (?:say|claim)[\s\S]{0,100}countersteering (?:is )?complete[\s\S]{0,220}(?:verified correction|handover has been loaded)/i,
+    /multiple failure classes[\s\S]{0,220}compaction[\s\S]{0,220}confirmed (?:external )?state[\s\S]{0,220}fresh session/i,
+  ], `${skillRoot}/references/recovery.md`);
+});
+
 test("opens every localized README with the self-deprecating drift dashboard", () => {
   const contracts = [
     ["README.md", /Drifting safely\. 100%/],

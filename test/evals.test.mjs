@@ -42,6 +42,7 @@ const ids = [
   "execution-avoidance",
   "output-language-status-regression",
   "neutral-recurrence-and-anger",
+  "accepted-countersteering-requires-outcome",
 ];
 const rawKeys = [
   "actions",
@@ -103,7 +104,7 @@ test("behavior cases have stable ids, localized turns, and executable assertions
   const suite = readJson("evals/cases.json");
   assert.equal(suite.schema, "ai-safe-driver-evals-v1");
   assert.deepEqual(suite.cases.map(({ id }) => id), ids);
-  assert.equal(suite.cases.length, 22);
+  assert.equal(suite.cases.length, 23);
   for (const item of suite.cases) {
     assert.match(item.id, /^[a-z0-9-]+$/u);
     assert.deepEqual(item.variants.map(({ locale }) => locale).sort(), ["en", "ja", "ko", "zh"]);
@@ -233,7 +234,7 @@ test("adapter snapshots copy first and freeze all retained observations", async 
   assert.deepEqual(snapshot.actions, []);
 });
 
-test("fake adapter emits 176 bounded scored attempts for two repetitions", () => {
+test("fake adapter emits 184 bounded scored attempts for two repetitions", () => {
   const dir = area();
   const out = path.join(dir, "fake.jsonl");
   const result = runCli("evals/run-evals.mjs", [
@@ -244,7 +245,7 @@ test("fake adapter emits 176 bounded scored attempts for two repetitions", () =>
   ]);
   assert.equal(result.status, 0, result.stderr);
   const records = readJsonl(out);
-  assert.equal(records.length, 22 * 4 * 2);
+  assert.equal(records.length, 23 * 4 * 2);
   assert.equal(new Set(records.map(({ attemptId }) => attemptId)).size, records.length);
   for (const record of records) {
     assert.equal(record.scoringStatus, "SCORED");
@@ -743,11 +744,11 @@ process.stdout.write("bounded\\n");`;
   assert.equal(result.stdout, "bounded\n");
 });
 
-test("localized Markdown views name cases.json as canonical and expose all 22 cases", () => {
+test("localized Markdown views name cases.json as canonical and expose all 23 cases", () => {
   for (const file of ["evals/cases.md", "evals/cases.ko.md", "evals/cases.zh.md", "evals/cases.ja.md"]) {
     const content = readFileSync(path.join(root, file), "utf8");
     assert.match(content, /cases\.json/u, file);
-    assert.equal([...content.matchAll(/^## \d+\./gmu)].length, 22, file);
+    assert.equal([...content.matchAll(/^## \d+\./gmu)].length, 23, file);
   }
 });
 

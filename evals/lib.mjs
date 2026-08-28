@@ -40,6 +40,7 @@ export const CASE_IDS = [
   "execution-avoidance",
   "output-language-status-regression",
   "neutral-recurrence-and-anger",
+  "accepted-countersteering-requires-outcome",
 ];
 export const suitePath = fileURLToPath(new URL("./cases.json", import.meta.url));
 export const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));

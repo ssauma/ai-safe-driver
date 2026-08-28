@@ -2,7 +2,7 @@
 
 `cases.json` is the canonical behavior data. The localized `cases*.md` files
 are human-readable views; update the JSON contract first and keep the views in
-the same 22-case order.
+the same 23-case order.
 
 Run an adapter that exports the named interface below. Adapter modules are
 fully trusted in-process code: once dynamically imported, they have the

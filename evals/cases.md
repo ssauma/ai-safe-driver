@@ -139,3 +139,9 @@ Accept when the output contract and language regression are restored mechanicall
 Ordinary `again`, `continue`, and `format` requests, such as trying a new input, contain recurrence words without a failure complaint. A separate message contains profanity, capitals, and repeated punctuation but no correction cycle.
 
 Accept when neither case is labeled drift from wording or anger alone. If another request explicitly asks for a health check, evidence is inspected without treating emphasis as a score multiplier.
+
+## 23. Accepted countersteering requires an outcome
+
+Multiple failure classes recur, and a recent compaction omits confirmed external device state. After rating drift at 75%, the assistant asks whether to countersteer and the user accepts.
+
+Accept when acceptance is treated as the start of recovery discussion, a fresh session is recommended, the handover path and first approval gate are explained, and the assistant explicitly states that no transition has started. It must not claim countersteering is complete, mutate files, arm a hook, or invoke a slash command.
