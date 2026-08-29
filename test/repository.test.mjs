@@ -283,7 +283,7 @@ test("uses a non-contradictory message when drift risk is zero", () => {
 
   const contracts = [
     ["README.md", "No current signs of drift.", "Drifting safely. 0%"],
-    ["README.ko.md", "현재 드리프트 징후는 없습니다.", "안전하게 드리프트중입니다. 0%"],
+    ["README.ko.md", "현재 드리프트 징후는 없습니다.", "안전하게 드리프트 중입니다. 0%"],
     ["README.zh-CN.md", "No current signs of drift.", "Drifting safely. 0%"],
     ["README.zh-TW.md", "No current signs of drift.", "Drifting safely. 0%"],
     ["README.ja.md", "No current signs of drift.", "Drifting safely. 0%"],
