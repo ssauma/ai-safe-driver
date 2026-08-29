@@ -274,25 +274,42 @@ test("opens every localized README with the self-deprecating drift dashboard", (
 
 test("uses a non-contradictory message when drift risk is zero", () => {
   const recovery = read(`${skillRoot}/references/recovery.md`);
-  assertMatchesAll(recovery, [
-    /At `0%`[\s\S]{0,160}Korean: `현재 드리프트 징후는 없습니다\.`/,
-    /At `0%`[\s\S]{0,220}Other languages: `No current signs of drift\.`/,
-    /At `25%`, `50%`, `75%`, or `100%`[\s\S]{0,180}Korean: `안전하게 드리프트 중입니다\. <percentage>%`/,
-    /At `25%`, `50%`, `75%`, or `100%`[\s\S]{0,240}Other languages: `Drifting safely\. <percentage>%`/,
-  ], `${skillRoot}/references/recovery.md`);
+  const zeroDashboard = recovery.match(/^- At `0%`:\n([\s\S]*?)(?=^- At `25%`)/mu)?.[1];
+  const nonzeroDashboard = recovery.match(/^- At `25%`, `50%`, `75%`, or `100%`:\n([\s\S]*?)(?=^At `75%`)/mu)?.[1];
+  assert.ok(zeroDashboard, "recovery.md is missing the 0% dashboard mapping");
+  assert.ok(nonzeroDashboard, "recovery.md is missing the nonzero dashboard mapping");
+
+  assertMatchesAll(zeroDashboard, [
+    /Korean: `현재 드리프트 징후는 없습니다\.`/,
+    /Simplified Chinese: `当前没有漂移迹象。`/,
+    /Traditional Chinese: `目前沒有漂移跡象。`/,
+    /Japanese: `現在、ドリフトの兆候はありません。`/,
+    /Other languages: `No current signs of drift\.`/,
+  ], `${skillRoot}/references/recovery.md 0% mapping`);
+  assertMatchesAll(nonzeroDashboard, [
+    /Korean: `안전하게 드리프트 중입니다\. <percentage>%`/,
+    /Simplified Chinese: `正在安全漂移。<percentage>%`/,
+    /Traditional Chinese: `正在安全甩尾。<percentage>%`/,
+    /Japanese: `安全にドリフト中です。<percentage>%`/,
+    /Other languages: `Drifting safely\. <percentage>%`/,
+  ], `${skillRoot}/references/recovery.md nonzero mapping`);
 
   const contracts = [
     ["README.md", "No current signs of drift.", "Drifting safely. 0%"],
     ["README.ko.md", "현재 드리프트 징후는 없습니다.", "안전하게 드리프트 중입니다. 0%"],
-    ["README.zh-CN.md", "No current signs of drift.", "Drifting safely. 0%"],
-    ["README.zh-TW.md", "No current signs of drift.", "Drifting safely. 0%"],
-    ["README.ja.md", "No current signs of drift.", "Drifting safely. 0%"],
+    ["README.zh-CN.md", "当前没有漂移迹象。", "正在安全漂移。0%"],
+    ["README.zh-TW.md", "目前沒有漂移跡象。", "正在安全甩尾。0%"],
+    ["README.ja.md", "現在、ドリフトの兆候はありません。", "安全にドリフト中です。0%"],
   ];
 
   for (const [filePath, zeroMessage, contradictoryMessage] of contracts) {
     const content = read(filePath);
     assert.equal(content.includes(zeroMessage), true, `${filePath} is missing its zero-drift message`);
     assert.equal(content.includes(contradictoryMessage), false, `${filePath} still claims to be drifting at 0%`);
+  }
+
+  for (const filePath of ["README.zh-CN.md", "README.zh-TW.md", "README.ja.md"]) {
+    assert.equal(read(filePath).includes("No current signs of drift."), false, `${filePath} still documents the English fallback`);
   }
 });
 
