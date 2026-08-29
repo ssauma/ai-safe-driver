@@ -65,7 +65,17 @@ The percentage is a rule-based risk label, not a measurement of hidden model sta
 
 After the four-part explanation, show the dashboard only when the user explicitly asks about drift, conversation health, or session viability:
 
-- Korean: `안전하게 드리프트중입니다. <percentage>%`
-- Other languages: `Drifting safely. <percentage>%`
+- At `0%`:
+  - Korean: `현재 드리프트 징후는 없습니다.`
+  - Simplified Chinese: `当前没有漂移迹象。`
+  - Traditional Chinese: `目前沒有漂移跡象。`
+  - Japanese: `現在、ドリフトの兆候はありません。`
+  - Other languages: `No current signs of drift.`
+- At `25%`, `50%`, `75%`, or `100%`:
+  - Korean: `안전하게 드리프트 중입니다. <percentage>%`
+  - Simplified Chinese: `正在安全漂移。<percentage>%`
+  - Traditional Chinese: `正在安全甩尾。<percentage>%`
+  - Japanese: `安全にドリフト中です。<percentage>%`
+  - Other languages: `Drifting safely. <percentage>%`
 
 At `75%` or `100%`, put the countersteering question on the next line. Do not append the dashboard or countersteering question to ordinary responses. If the user requires strict JSON, CSV, a fixed schema, an exact line count, or no extra text, the output contract wins. Do not raise the percentage merely because the user sounds angry.
