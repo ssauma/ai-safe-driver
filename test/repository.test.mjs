@@ -309,7 +309,22 @@ test("uses a non-contradictory message when drift risk is zero", () => {
   }
 
   for (const filePath of ["README.zh-CN.md", "README.zh-TW.md", "README.ja.md"]) {
-    assert.equal(read(filePath).includes("No current signs of drift."), false, `${filePath} still documents the English fallback`);
+    const content = read(filePath);
+    for (const fallback of ["No current signs of drift.", "Drifting safely."]) {
+      assert.equal(content.includes(fallback), false, `${filePath} still documents the English fallback: ${fallback}`);
+    }
+  }
+
+  const evalContracts = [
+    ["evals/cases.zh.md", ["正在安全漂移。75%", "正在安全漂移。100%", "正在安全甩尾。75%", "正在安全甩尾。100%"]],
+    ["evals/cases.ja.md", ["安全にドリフト中です。75%", "安全にドリフト中です。100%"]],
+  ];
+
+  for (const [filePath, messages] of evalContracts) {
+    const content = read(filePath);
+    for (const message of messages) {
+      assert.equal(content.includes(message), true, `${filePath} is missing the localized dashboard message: ${message}`);
+    }
   }
 });
 
