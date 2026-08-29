@@ -118,7 +118,7 @@ test("keeps repository tests local instead of shipping CI jobs", () => {
 });
 
 test("aligns the package version and direct-invocation prompt", () => {
-  assert.equal(packageVersion, "0.4.0");
+  assert.equal(packageVersion, "0.4.1");
   assert.equal(
     read(`${skillRoot}/agents/openai.yaml`).includes(
       "Use $ai-safe-driver to diagnose the repeated failure described in this prompt or visible conversation. If no evidence is available, ask for the goal, repeated result, latest correction, and output contract; never invent prior-session context.",
@@ -260,7 +260,7 @@ test("requires accepted countersteering to reach a verified outcome", () => {
 test("opens every localized README with the self-deprecating drift dashboard", () => {
   const contracts = [
     ["README.md", /Drifting safely\. 100%/],
-    ["README.ko.md", /안전하게 드리프트중입니다\. 100%/],
+    ["README.ko.md", /안전하게 드리프트 중입니다\. 100%/],
     ["README.zh-CN.md", /正在安全漂移。100%/],
     ["README.zh-TW.md", /正在安全甩尾。100%/],
     ["README.ja.md", /安全にドリフト中です。100%/],
@@ -269,6 +269,30 @@ test("opens every localized README with the self-deprecating drift dashboard", (
   for (const [filePath, dashboard] of contracts) {
     const opening = read(filePath).slice(0, 700);
     assert.match(opening, dashboard, `${filePath} hides the dashboard below the opening`);
+  }
+});
+
+test("uses a non-contradictory message when drift risk is zero", () => {
+  const recovery = read(`${skillRoot}/references/recovery.md`);
+  assertMatchesAll(recovery, [
+    /At `0%`[\s\S]{0,160}Korean: `현재 드리프트 징후는 없습니다\.`/,
+    /At `0%`[\s\S]{0,220}Other languages: `No current signs of drift\.`/,
+    /At `25%`, `50%`, `75%`, or `100%`[\s\S]{0,180}Korean: `안전하게 드리프트 중입니다\. <percentage>%`/,
+    /At `25%`, `50%`, `75%`, or `100%`[\s\S]{0,240}Other languages: `Drifting safely\. <percentage>%`/,
+  ], `${skillRoot}/references/recovery.md`);
+
+  const contracts = [
+    ["README.md", "No current signs of drift.", "Drifting safely. 0%"],
+    ["README.ko.md", "현재 드리프트 징후는 없습니다.", "안전하게 드리프트중입니다. 0%"],
+    ["README.zh-CN.md", "No current signs of drift.", "Drifting safely. 0%"],
+    ["README.zh-TW.md", "No current signs of drift.", "Drifting safely. 0%"],
+    ["README.ja.md", "No current signs of drift.", "Drifting safely. 0%"],
+  ];
+
+  for (const [filePath, zeroMessage, contradictoryMessage] of contracts) {
+    const content = read(filePath);
+    assert.equal(content.includes(zeroMessage), true, `${filePath} is missing its zero-drift message`);
+    assert.equal(content.includes(contradictoryMessage), false, `${filePath} still claims to be drifting at 0%`);
   }
 });
 
@@ -587,7 +611,7 @@ test("discloses the permission-gated local Git exclude write in every readme", (
 test("defines an on-demand metaphorical dashboard and protects strict formats", () => {
   const skill = read(`${skillRoot}/references/recovery.md`);
   const handover = read(`${skillRoot}/references/handover.md`);
-  assert.match(skill, /안전하게 드리프트중입니다\. <percentage>%/);
+  assert.match(skill, /안전하게 드리프트 중입니다\. <percentage>%/);
   assert.match(skill, /Drifting safely\. <percentage>%/);
   assert.match(skill, /not a measurement/i);
   assert.match(skill, /Do not append the dashboard or countersteering question to ordinary responses/);

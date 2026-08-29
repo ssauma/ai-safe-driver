@@ -22,7 +22,7 @@ Automatic phrase coverage includes Korean, English, Simplified Chinese, Traditio
 
 These examples are not passwords or exact commands. The hooks match several complaint patterns in each supported language, while ordinary requests such as "explain it again" do not count as drift.
 
-The dashboard is deliberately a little ridiculous. When you ask for a health check, it may report `Drifting safely. 0%` or `Drifting safely. 100%`. It stays out of ordinary replies. The number is a rule-based label, not a reading of model weights, attention, or some hidden internal drift meter.
+The dashboard is deliberately a little ridiculous, but it no longer claims to be drifting when the risk is zero. When you ask for a health check, it may report `No current signs of drift.` or `Drifting safely. 100%`. It stays out of ordinary replies. The number is a rule-based label, not a reading of model weights, attention, or some hidden internal drift meter.
 
 At 75% or 100%, it asks `Would you like me to countersteer?` That means stopping the approach that keeps failing and suggesting one limited way to recover. A yes only starts that discussion. It does not give the plugin permission to write files, retry tools, compact the conversation, or clear the session. Those actions still need separate approval.
 

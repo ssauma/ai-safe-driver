@@ -1,6 +1,6 @@
 {
   "name": "ai-safe-driver",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Recover from repeated mistakes, failed tool calls, format violations, and conversation drift.",
   "author": {
     "name": "Kai",

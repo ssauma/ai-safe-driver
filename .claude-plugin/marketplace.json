@@ -9,7 +9,7 @@
       "name": "ai-safe-driver",
       "source": "./plugins/ai-safe-driver",
       "description": "Diagnose repeated mistakes, tool failures, output violations, and conversation drift.",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "author": {
         "name": "Kai"
       },
